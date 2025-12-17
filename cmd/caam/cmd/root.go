@@ -215,59 +215,6 @@ Examples:
 	},
 }
 
-// activateCmd restores auth files from the vault.
-var activateCmd = &cobra.Command{
-	Use:     "activate <tool> <profile-name>",
-	Aliases: []string{"switch", "use"},
-	Short:   "Activate a profile (instant switch)",
-	Long: `Restores auth files from the vault, instantly switching to that account.
-
-This is the magic command - sub-second account switching without any login flows!
-
-Examples:
-  caam activate codex work-account
-  caam activate claude personal-max
-  caam activate gemini team-ultra
-
-After activating, just run the tool normally - it will use the new account.`,
-	Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		tool := strings.ToLower(args[0])
-		profileName := args[1]
-
-		getFileSet, ok := tools[tool]
-		if !ok {
-			return fmt.Errorf("unknown tool: %s (supported: codex, claude, gemini)", tool)
-		}
-
-		fileSet := getFileSet()
-
-		// Optionally backup current state first
-		backupFirst, _ := cmd.Flags().GetBool("backup-current")
-		if backupFirst {
-			currentProfile, _ := vault.ActiveProfile(fileSet)
-			if currentProfile != "" && currentProfile != profileName {
-				if err := vault.Backup(fileSet, currentProfile); err != nil {
-					fmt.Printf("Warning: could not backup current profile: %v\n", err)
-				}
-			}
-		}
-
-		// Restore from vault
-		if err := vault.Restore(fileSet, profileName); err != nil {
-			return fmt.Errorf("activate failed: %w", err)
-		}
-
-		fmt.Printf("Activated %s profile '%s'\n", tool, profileName)
-		fmt.Printf("  Run '%s' to start using this account\n", tool)
-		return nil
-	},
-}
-
-func init() {
-	activateCmd.Flags().Bool("backup-current", false, "backup current auth before switching")
-}
-
 // statusCmd shows which profile is currently active.
 var statusCmd = &cobra.Command{
 	Use:   "status [tool]",

@@ -1,0 +1,103 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/refresh"
+)
+
+// activateCmd restores auth files from the vault.
+var activateCmd = &cobra.Command{
+	Use:     "activate <tool> <profile-name>",
+	Aliases: []string{"switch", "use"},
+	Short:   "Activate a profile (instant switch)",
+	Long: `Restores auth files from the vault, instantly switching to that account.
+
+This is the magic command - sub-second account switching without any login flows!
+
+Examples:
+  caam activate codex work-account
+  caam activate claude personal-max
+  caam activate gemini team-ultra
+
+After activating, just run the tool normally - it will use the new account.`,
+	Args: cobra.ExactArgs(2),
+	RunE: runActivate,
+}
+
+func init() {
+	activateCmd.Flags().Bool("backup-current", false, "backup current auth before switching")
+	// Add to root in init() or let root.go do it? 
+	// root.go does rootCmd.AddCommand(activateCmd). 
+	// Since both are in package cmd, it works.
+}
+
+func runActivate(cmd *cobra.Command, args []string) error {
+	ool := strings.ToLower(args[0])
+	profileName := args[1]
+
+	getFileSet, ok := tools[tool]
+	if !ok {
+		return fmt.Errorf("unknown tool: %s (supported: codex, claude, gemini)", tool)
+	}
+
+	fileSet := getFileSet()
+
+	// Step 1: Refresh if needed
+	ctx := cmd.Context()
+	if err := refreshIfNeeded(ctx, tool, profileName); err != nil {
+		// Log debug? For now just print if verbose?
+		// Logic handles printing "failed".
+	}
+
+	// Optionally backup current state first
+	backupFirst, _ := cmd.Flags().GetBool("backup-current")
+	if backupFirst {
+		currentProfile, _ := vault.ActiveProfile(fileSet)
+		if currentProfile != "" && currentProfile != profileName {
+			if err := vault.Backup(fileSet, currentProfile); err != nil {
+				fmt.Printf("Warning: could not backup current profile: %v\n", err)
+			}
+		}
+	}
+
+	// Restore from vault
+	if err := vault.Restore(fileSet, profileName); err != nil {
+		return fmt.Errorf("activate failed: %w", err)
+	}
+
+	fmt.Printf("Activated %s profile '%s'\n", tool, profileName)
+	fmt.Printf("  Run '%s' to start using this account\n", tool)
+	return nil
+}
+
+func refreshIfNeeded(ctx context.Context, provider, profile string) error {
+	// Try to get health data. If missing, we might want to populate it?
+	// But RefreshProfile uses vault path.
+	// If we don't have health data, we don't know expiry, so we can't decide to refresh.
+	// `getProfileHealth` in root.go parses files.
+	// We should use that logic? `getProfileHealth` is in `root.go` (same package).
+	
+	h := getProfileHealth(provider, profile)
+	
+	if !refresh.ShouldRefresh(h, 0) {
+		return nil
+	}
+
+	fmt.Printf("Refreshing token (expires in %s)... ", 
+		health.FormatTimeRemaining(h.TokenExpiresAt))
+
+	err := refresh.RefreshProfile(ctx, provider, profile, vault, healthStore)
+	if err != nil {
+		fmt.Printf("failed (%v)\n", err)
+		return nil // Continue activation even if refresh fails
+	}
+
+	fmt.Println("done")
+	return nil
+}
