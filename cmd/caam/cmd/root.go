@@ -23,6 +23,7 @@ import (
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider/claude"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider/codex"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider/gemini"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/tui"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/version"
 )
 
@@ -65,7 +66,13 @@ Supported tools:
 Advanced: Profile isolation for simultaneous sessions:
   caam profile add codex work
   caam login codex work
-  caam exec codex work -- "implement feature X"`,
+  caam exec codex work -- "implement feature X"
+
+Run 'caam' without arguments to launch the interactive TUI.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// If called with no subcommand, launch TUI
+		return tui.Run()
+	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Initialize vault
 		vault = authfile.NewVault(authfile.DefaultVaultPath())
@@ -704,6 +711,9 @@ var profileStatusCmd = &cobra.Command{
 		fmt.Printf("  Locked: %v\n", status.HasLockFile)
 		if prof.AccountLabel != "" {
 			fmt.Printf("  Account: %s\n", prof.AccountLabel)
+		}
+		if prof.HasBrowserConfig() {
+			fmt.Printf("  Browser: %s\n", prof.BrowserDisplayName())
 		}
 
 		return nil
