@@ -5,351 +5,231 @@
 ![License](https://img.shields.io/badge/License-MIT-50fa7b?style=for-the-badge)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/Dicklesworthstone/coding_agent_account_manager/ci.yml?style=for-the-badge&logo=github)
 
-> **Instant auth switching for AI coding tool subscriptions. Switch accounts in under a second when you hit usage limits.**
-
----
-
-### Quick Install
+> **Sub-100ms account switching for AI coding CLIs. When you hit usage limits, don't wait 60 seconds for browser OAuth—just swap auth files instantly.**
 
 ```bash
+# Install
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_account_manager/main/install.sh?$(date +%s)" | bash
+
+# Use
+caam backup claude alice@gmail.com      # Save current auth
+caam activate claude bob@gmail.com      # Switch instantly
 ```
 
 ---
 
-## TL;DR
+## The Problem
 
-`caam` manages authentication files for AI coding CLIs, enabling **sub-second account switching** when you hit usage limits on "all you can eat" subscriptions.
+You're deep in flow, Claude Max shows a rate limit. The official way to switch accounts:
 
-**The Problem:**
-You have multiple AI coding subscriptions (Claude Max, GPT Pro, Gemini Ultra). When you hit the 5-hour usage limit, switching accounts means:
-1. Run `/login` or equivalent
-2. Wait for browser to open
-3. Sign out of current Google/GitHub account
-4. Sign in to new account
-5. Authorize the app
-6. Wait for redirect...
-
-**That's 30-60 seconds of friction, multiple times per day.**
-
-**The Solution:**
-```bash
-# Hit your limit? One command, instant switch:
-caam activate claude jeff-gmail-2
+```
+/login → browser opens → sign out of Google → sign into different Google →
+authorize app → wait for redirect → back to terminal
 ```
 
-**How it works:** Each CLI stores OAuth tokens in specific files. `caam` backs them up with labels and restores them on demand. No proxies, no env vars, no pseudo-HOME directories for simple switching—just atomic file copies.
+**That's 30-60 seconds of friction.** Multiply by 5+ switches per day across multiple tools.
+
+## The Solution
+
+Each AI CLI stores OAuth tokens in plain files. `caam` backs them up and restores them:
+
+```bash
+caam activate claude bob@gmail.com   # ~50ms, done
+```
+
+No browser. No OAuth dance. No interruption to your flow state.
 
 ---
 
-## The Core Experience
+## How It Works
 
-### Lightning-Fast Account Switching
+```mermaid
+flowchart LR
+    subgraph System["Your System"]
+        A["~/.claude.json"]
+        B["~/.codex/auth.json"]
+        C["~/.gemini/settings.json"]
+    end
 
-```bash
-# One-time setup: login normally, then backup
-claude                              # login via /login
-caam backup claude jeff-gmail-1     # save auth files
+    subgraph Vault["~/.local/share/caam/vault/"]
+        D["claude/alice@gmail.com/"]
+        E["claude/bob@gmail.com/"]
+        F["codex/work@company.com/"]
+    end
 
-# When you hit limits (takes < 1 second):
-caam activate claude jeff-gmail-2   # restore different account
-claude                              # continue working immediately
+    A <-->|"backup / activate"| D
+    A <-->|"backup / activate"| E
+    B <-->|"backup / activate"| F
+
+    style System fill:#1a1a2e,stroke:#4a4a6a,color:#fff
+    style Vault fill:#16213e,stroke:#4a4a6a,color:#fff
 ```
 
-The switching is **atomic and instant**. No browser flows, no waiting, no interruption to your flow state.
-
-### Multi-Tool Support
-
-| Tool | Subscription | Auth Files |
-|------|-------------|------------|
-| **Claude Code** | Claude Max ($100/mo) | `~/.claude.json`, `~/.config/claude-code/auth.json` |
-| **Codex CLI** | GPT Pro ($200/mo) | `~/.codex/auth.json` |
-| **Gemini CLI** | Google One AI Premium | `~/.gemini/settings.json` |
-
-### Two Operating Modes
-
-**1. Vault Profiles (Simple Switching)**
-Swap auth files in place. One account active at a time, instant switching.
-```bash
-caam backup claude work-account
-caam activate claude personal-account
-```
-
-**2. Isolated Profiles (Parallel Sessions)**
-Run multiple accounts simultaneously with full directory isolation.
-```bash
-caam profile add codex work
-caam profile add codex personal
-caam exec codex work -- "implement feature X"
-caam exec codex personal -- "review code"
-```
-
----
-
-## Architecture
-
-`caam` is deliberately simple. No daemons, no databases, no network calls. Just file operations.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        YOUR SYSTEM                               │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   ~/.claude.json ◄──────┐                                        │
-│   ~/.config/claude-code/ │         ┌──────────────────────────┐  │
-│                          │         │  ~/.local/share/caam/    │  │
-│   ~/.codex/auth.json ◄───┼─ caam ──┤  vault/                  │  │
-│                          │         │    claude/               │  │
-│   ~/.gemini/settings.json│         │      jeff-gmail-1/       │  │
-│                          │         │      jeff-gmail-2/       │  │
-│                          │         │    codex/                │  │
-│                          │         │      work-account/       │  │
-│                          │         └──────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-
-backup:   AUTH FILES ──copy──► VAULT
-activate: VAULT ──copy──► AUTH FILES
-```
+**That's it.** No daemons, no databases, no network calls. Just `cp` with extra steps.
 
 ### Why This Works
 
-OAuth tokens in these files are **bearer tokens**—whoever has the file has the access. The CLI tools don't verify device identity beyond what's in the token. By swapping files, you're effectively "becoming" that logged-in session.
+OAuth tokens are bearer tokens—possession equals access. The CLI tools don't fingerprint your machine beyond what's already in the token file. Swapping files is equivalent to "being" that authenticated session.
 
-### Vault Structure
+### Profile Detection
 
+`caam status` uses **content hashing** to detect the active profile:
+
+1. SHA-256 hash current auth files
+2. Compare against all vault profiles
+3. Match = that's what's active
+
+No state files that can desync. Works after reboots. Detects manual switches.
+
+---
+
+## Supported Tools
+
+| Tool | Auth Location | Login Command |
+|------|--------------|---------------|
+| **Claude Code** | `~/.claude.json` + `~/.config/claude-code/auth.json` | `/login` in CLI |
+| **Codex CLI** | `~/.codex/auth.json` | `codex login` |
+| **Gemini CLI** | `~/.gemini/settings.json` | Interactive prompt |
+
+---
+
+## Quick Start
+
+### 1. Backup Your Current Account
+
+```bash
+# After logging into Claude normally
+caam backup claude alice@gmail.com
 ```
-~/.local/share/caam/
-├── vault/                          # Saved auth profiles
-│   ├── claude/
-│   │   ├── jeff-gmail-1/
-│   │   │   ├── .claude.json        # Backed up auth
-│   │   │   ├── auth.json           # From ~/.config/claude-code/
-│   │   │   └── meta.json           # Timestamp, source paths
-│   │   └── jeff-gmail-2/
-│   │       └── ...
-│   ├── codex/
-│   │   └── work-account/
-│   │       └── auth.json
-│   └── gemini/
-│       └── personal/
-│           └── settings.json
-│
-└── profiles/                       # Isolated profiles (advanced)
-    └── codex/
-        └── work/
-            ├── profile.json        # Profile metadata
-            ├── codex_home/         # Isolated CODEX_HOME
-            │   └── auth.json
-            └── home/               # Pseudo-HOME with symlinks
-                ├── .ssh -> ~/.ssh
-                └── .gitconfig -> ~/.gitconfig
+
+### 2. Add Another Account
+
+```bash
+caam clear claude                        # Remove current auth
+claude                                   # Login as bob@gmail.com via /login
+caam backup claude bob@gmail.com         # Save it
+```
+
+### 3. Switch Instantly
+
+```bash
+caam activate claude alice@gmail.com     # Back to Alice
+caam activate claude bob@gmail.com       # Back to Bob
+```
+
+### 4. Check Status
+
+```bash
+$ caam status
+claude: alice@gmail.com (active)
+codex:  work@company.com (active)
+gemini: (no auth files)
+
+$ caam ls claude
+alice@gmail.com
+bob@gmail.com
+carol@gmail.com
 ```
 
 ---
 
-## Command Reference
-
-### Auth File Swapping (Primary Use Case)
+## Commands
 
 | Command | Description |
 |---------|-------------|
-| `caam backup <tool> <name>` | Save current auth files to vault |
-| `caam activate <tool> <name>` | Restore auth files from vault (instant switch!) |
-| `caam status [tool]` | Show which profile is currently active |
-| `caam ls [tool]` | List all saved profiles in vault |
-| `caam delete <tool> <name>` | Remove a saved profile |
-| `caam paths [tool]` | Show auth file locations for each tool |
-| `caam clear <tool>` | Remove auth files (logout state) |
+| `caam backup <tool> <email>` | Save current auth to vault |
+| `caam activate <tool> <email>` | Restore auth from vault |
+| `caam status [tool]` | Show active profiles |
+| `caam ls [tool]` | List saved profiles |
+| `caam delete <tool> <email>` | Remove saved profile |
+| `caam clear <tool>` | Delete auth files (logout) |
+| `caam paths [tool]` | Show auth file locations |
 
-**Aliases:** `caam switch` and `caam use` work like `caam activate`
-
-### Profile Isolation (Advanced)
-
-For running multiple accounts **simultaneously** with full environment isolation:
-
-| Command | Description |
-|---------|-------------|
-| `caam profile add <tool> <name>` | Create isolated profile directory |
-| `caam profile ls [tool]` | List isolated profiles |
-| `caam profile delete <tool> <name>` | Delete isolated profile |
-| `caam profile status <tool> <name>` | Show isolated profile status |
-| `caam login <tool> <profile>` | Run login flow for isolated profile |
-| `caam exec <tool> <profile> [-- args]` | Run CLI with isolated profile |
+**Aliases:** `switch`, `use` → `activate`
 
 ---
 
-## Workflow Examples
+## Advanced: Parallel Sessions
 
-### Daily Workflow
-
-```bash
-# Morning: Check what's active
-caam status
-# claude: jeff-gmail-1 (active)
-# codex:  work-openai (active)
-# gemini: personal (active)
-
-# Afternoon: Hit Claude usage limit
-caam activate claude jeff-gmail-2
-# Activated claude profile 'jeff-gmail-2'
-
-claude  # Continue working immediately with new account
-```
-
-### Initial Setup
+For running multiple accounts **simultaneously** (different terminal windows):
 
 ```bash
-# 1. Login to first account using normal flow
-claude
-# Inside Claude: /login → authenticate with jeff-gmail-1@gmail.com
+# Create isolated environments
+caam profile add codex work@company.com
+caam profile add codex personal@gmail.com
 
-# 2. Backup the auth
-caam backup claude jeff-gmail-1
+# Login to each (one-time browser flow)
+caam login codex work@company.com
+caam login codex personal@gmail.com
 
-# 3. Clear and login to second account
-caam clear claude
-claude
-# Inside Claude: /login → authenticate with jeff-gmail-2@gmail.com
-
-# 4. Backup that too
-caam backup claude jeff-gmail-2
-
-# 5. Now you can switch instantly forever!
-caam activate claude jeff-gmail-1  # < 1 second
-caam activate claude jeff-gmail-2  # < 1 second
+# Run with isolation
+caam exec codex work@company.com -- "implement feature"
+caam exec codex personal@gmail.com -- "review PR"
 ```
 
-### Parallel Sessions (Advanced)
-
-```bash
-# Create isolated profiles
-caam profile add codex work
-caam profile add codex personal
-
-# Login to each (one-time, uses browser)
-caam login codex work      # Opens browser for work account
-caam login codex personal  # Opens browser for personal account
-
-# Run simultaneously in different terminals
-caam exec codex work -- "implement auth system"
-caam exec codex personal -- "review PR #123"
-```
+Each profile gets its own `$HOME` and `$CODEX_HOME` with symlinks to your real `.ssh`, `.gitconfig`, etc.
 
 ---
 
-## How Profile Detection Works
+## Vault Structure
 
-`caam status` determines the active profile by **content hashing**:
-
-1. Read current auth files (e.g., `~/.claude.json`)
-2. Compute SHA-256 hash of contents
-3. Compare against hashes of all vault profiles
-4. Match = that profile is active
-
-This means:
-- Profiles are detected even if you switched manually
-- No hidden state files that can get out of sync
-- Works correctly after system restarts
-
----
-
-## Supported Tools Deep Dive
-
-### Claude Code (Claude Max)
-
-**Subscription:** Claude Max ($100/month for 5x usage)
-
-**Auth Files:**
-- `~/.claude.json` - Main authentication token
-- `~/.config/claude-code/auth.json` - Secondary auth data
-
-**Login Command:** Inside Claude Code, type `/login`
-
-**Notes:** Claude Max has a 5-hour rolling usage window. When you hit it, you'll see rate limit messages. Switch accounts to continue.
-
-### Codex CLI (GPT Pro)
-
-**Subscription:** GPT Pro ($200/month unlimited)
-
-**Auth Files:**
-- `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`)
-
-**Login Command:** `codex login`
-
-**Notes:** Respects `CODEX_HOME` environment variable for custom locations.
-
-### Gemini CLI (Google One AI Premium)
-
-**Subscription:** Google One AI Premium ($20/month)
-
-**Auth Files:**
-- `~/.gemini/settings.json`
-
-**Login Command:** Start `gemini`, select "Login with Google"
+```
+~/.local/share/caam/vault/
+├── claude/
+│   ├── alice@gmail.com/
+│   │   ├── .claude.json
+│   │   ├── auth.json
+│   │   └── meta.json        # backup timestamp
+│   └── bob@gmail.com/
+│       └── ...
+├── codex/
+│   └── work@company.com/
+│       └── auth.json
+└── gemini/
+    └── personal@gmail.com/
+        └── settings.json
+```
 
 ---
 
 ## FAQ
 
-**Q: Is this against terms of service?**
+**Is this against ToS?**
 
-A: No. You're using your own legitimately-purchased subscriptions. `caam` just manages local auth files—it doesn't share accounts, bypass rate limits, or modify API traffic. Each account still respects its individual usage limits.
+No. You're using your own paid subscriptions. `caam` doesn't share accounts, bypass rate limits, or touch network traffic. Each account still has its own usage limits.
 
-**Q: What if the tool updates and changes auth file locations?**
+**Will switching break a running session?**
 
-A: Run `caam paths` to see current locations. If they change in a tool update, we'll update `caam`. File an issue if you notice a discrepancy.
+The running CLI may throw auth errors. Best practice: switch between sessions, not during.
 
-**Q: Can I use this on multiple machines?**
+**Can I sync vault across machines?**
 
-A: Auth files often contain machine-specific identifiers (device IDs, etc.). Backup and restore on each machine separately. Don't copy vault directories between machines.
+Don't. Auth tokens often contain machine identifiers. Backup separately on each machine.
 
-**Q: What's the difference between vault profiles and isolated profiles?**
+**What if auth file locations change?**
 
-A:
-- **Vault profiles** (`backup`/`activate`): Swap auth files in place. Simple, instant, one account active at a time per tool.
-- **Isolated profiles** (`profile add`/`exec`): Full directory isolation with pseudo-HOME. Run multiple accounts simultaneously in parallel terminals.
-
-**Q: Will this break my existing sessions?**
-
-A: Switching profiles while a CLI is running may cause auth errors in the running session. Best practice: switch accounts before starting a new session, not during.
-
-**Q: How do I know which account I'm currently using?**
-
-A: Run `caam status`. It shows the active profile for each tool based on content hash matching.
+Run `caam paths` to see current locations. File an issue if they've changed.
 
 ---
 
 ## Installation
 
-### One-liner (Recommended)
-
+**One-liner:**
 ```bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_account_manager/main/install.sh?$(date +%s)" | bash
 ```
 
-### From Source
-
+**From source:**
 ```bash
 git clone https://github.com/Dicklesworthstone/coding_agent_account_manager
-cd caam
-go build -o caam ./cmd/caam
+cd coding_agent_account_manager && go build -o caam ./cmd/caam
 sudo mv caam /usr/local/bin/
 ```
 
-### Go Install
-
+**Go install:**
 ```bash
 go install github.com/Dicklesworthstone/coding_agent_account_manager/cmd/caam@latest
 ```
-
----
-
-## Tips
-
-1. **Name profiles descriptively:** Use `jeff-gmail-1`, `work-openai`, `personal-gemini`—not `account1`, `backup`
-2. **Backup before clearing:** `caam backup claude current && caam clear claude`
-3. **Check status often:** `caam status` shows what's active across all tools
-4. **Use --backup-current flag:** `caam activate claude new --backup-current` auto-saves current state
 
 ---
 
