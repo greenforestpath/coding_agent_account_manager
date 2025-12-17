@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -118,5 +119,99 @@ func TestCapitalizeFirst(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("capitalizeFirst(%q) = %q, expected %q", tc.input, result, tc.expected)
 		}
+	}
+}
+
+func TestProfilesPanelBasic(t *testing.T) {
+	p := NewProfilesPanel()
+	if p == nil {
+		t.Fatal("expected non-nil profiles panel")
+	}
+
+	p.SetProvider("claude")
+	view := p.View()
+	if view == "" {
+		t.Error("expected non-empty view")
+	}
+}
+
+func TestProfilesPanelWithProfiles(t *testing.T) {
+	p := NewProfilesPanel()
+	p.SetProvider("codex")
+
+	// Note: Profiles are sorted by last used (most recent first), then by name
+	// Using different LastUsed times to control sort order
+	profiles := []ProfileInfo{
+		{Name: "work@company.com", AuthMode: "oauth", LoggedIn: true, IsActive: true, LastUsed: time.Now()},
+		{Name: "personal@gmail.com", AuthMode: "oauth", LoggedIn: true, Locked: true, LastUsed: time.Now().Add(-1 * time.Hour)},
+	}
+	p.SetProfiles(profiles)
+
+	view := p.View()
+	if view == "" {
+		t.Error("expected non-empty view")
+	}
+
+	// Test selection
+	if p.GetSelected() != 0 {
+		t.Errorf("expected initial selection 0, got %d", p.GetSelected())
+	}
+
+	p.MoveDown()
+	if p.GetSelected() != 1 {
+		t.Errorf("expected selection 1 after MoveDown, got %d", p.GetSelected())
+	}
+
+	p.MoveUp()
+	if p.GetSelected() != 0 {
+		t.Errorf("expected selection 0 after MoveUp, got %d", p.GetSelected())
+	}
+
+	// Test GetSelectedProfile - should be work@ since it has most recent LastUsed
+	selected := p.GetSelectedProfile()
+	if selected == nil {
+		t.Fatal("expected non-nil selected profile")
+	}
+	if selected.Name != "work@company.com" {
+		t.Errorf("expected work@company.com, got %s", selected.Name)
+	}
+}
+
+func TestFormatRelativeTime(t *testing.T) {
+	// Test zero time
+	result := formatRelativeTime(time.Time{})
+	if result != "never" {
+		t.Errorf("expected 'never' for zero time, got %s", result)
+	}
+
+	// Test current time
+	result = formatRelativeTime(time.Now())
+	if result != "now" {
+		t.Errorf("expected 'now' for current time, got %s", result)
+	}
+}
+
+func TestProfilesPanelIntegration(t *testing.T) {
+	m := New()
+
+	// Verify profiles panel is initialized
+	if m.profilesPanel == nil {
+		t.Fatal("expected profilesPanel to be initialized")
+	}
+
+	// Simulate loading profiles
+	profiles := map[string][]Profile{
+		"claude": {
+			{Name: "alice@example.com", Provider: "claude", IsActive: true},
+			{Name: "bob@example.com", Provider: "claude", IsActive: false},
+		},
+	}
+	m.profiles = profiles
+	m.syncProfilesPanel()
+
+	// Verify profiles panel synced
+	selected := m.profilesPanel.GetSelectedProfile()
+	if selected == nil {
+		t.Fatal("expected non-nil selected profile after sync")
 	}
 }
