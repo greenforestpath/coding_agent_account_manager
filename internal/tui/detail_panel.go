@@ -5,22 +5,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // DetailInfo represents the detailed information for a profile.
 type DetailInfo struct {
-	Name        string
-	Provider    string
-	AuthMode    string
-	LoggedIn    bool
-	Locked      bool
-	Path        string
-	CreatedAt   time.Time
-	LastUsedAt  time.Time
-	Account     string
-	BrowserCmd  string
-	BrowserProf string
+	Name         string
+	Provider     string
+	AuthMode     string
+	LoggedIn     bool
+	Locked       bool
+	Path         string
+	CreatedAt    time.Time
+	LastUsedAt   time.Time
+	Account      string
+	BrowserCmd   string
+	BrowserProf  string
+	HealthStatus health.HealthStatus
+	TokenExpiry  time.Time
+	ErrorCount   int
+	Penalty      float64
 }
 
 // DetailPanel renders the right panel showing profile details and available actions.
@@ -143,17 +148,57 @@ func (p *DetailPanel) View() string {
 	// Auth mode
 	rows = append(rows, p.renderRow("Auth", prof.AuthMode))
 
-	// Status
-	var statusStr string
-	if prof.LoggedIn {
-		statusStr = p.styles.StatusOK.Render("Logged in ✓")
+	// Status with icon and text
+	statusText := prof.HealthStatus.Icon() + " " + prof.HealthStatus.String()
+	// Apply color based on status
+	var statusStyle lipgloss.Style
+	switch prof.HealthStatus {
+	case health.StatusHealthy:
+		statusStyle = p.styles.StatusOK
+	case health.StatusWarning:
+		statusStyle = lipgloss.NewStyle().Foreground(colorYellow)
+	case health.StatusCritical:
+		statusStyle = p.styles.StatusBad
+	default:
+		statusStyle = lipgloss.NewStyle().Foreground(colorGray)
+	}
+	rows = append(rows, p.renderRow("Status", statusStyle.Render(statusText)))
+
+	// Token Expiry
+	if !prof.TokenExpiry.IsZero() {
+		ttl := time.Until(prof.TokenExpiry)
+		expiryStr := ""
+		if ttl < 0 {
+			expiryStr = p.styles.StatusBad.Render("Expired")
+		} else {
+			expiryStr = fmt.Sprintf("Expires in %s", formatDurationFull(ttl))
+		}
+		rows = append(rows, p.renderRow("Token", expiryStr))
+	}
+
+	// Errors (if any)
+	if prof.ErrorCount > 0 {
+		errorStr := fmt.Sprintf("%d in last hour", prof.ErrorCount)
+		if prof.ErrorCount >= 3 {
+			errorStr = p.styles.StatusBad.Render(errorStr)
+		} else {
+			errorStr = lipgloss.NewStyle().Foreground(colorYellow).Render(errorStr)
+		}
+		rows = append(rows, p.renderRow("Errors", errorStr))
 	} else {
-		statusStr = p.styles.StatusBad.Render("Not logged in")
+		rows = append(rows, p.renderRow("Errors", p.styles.StatusOK.Render("None")))
 	}
+
+	// Penalty (if any)
+	if prof.Penalty > 0 {
+		penaltyStr := fmt.Sprintf("%.2f", prof.Penalty)
+		rows = append(rows, p.renderRow("Penalty", penaltyStr))
+	}
+
+	// Lock status
 	if prof.Locked {
-		statusStr += " " + p.styles.LockIcon.Render("🔒 Locked")
+		rows = append(rows, p.renderRow("Lock", p.styles.LockIcon.Render("🔒 Locked")))
 	}
-	rows = append(rows, p.renderRow("Status", statusStr))
 
 	// Path (truncate if too long)
 	pathDisplay := prof.Path
@@ -161,7 +206,9 @@ func (p *DetailPanel) View() string {
 	if maxPathLen > 0 && len(pathDisplay) > maxPathLen {
 		pathDisplay = "~" + pathDisplay[len(pathDisplay)-maxPathLen+1:]
 	}
-	rows = append(rows, p.renderRow("Path", pathDisplay))
+	if pathDisplay != "" {
+		rows = append(rows, p.renderRow("Path", pathDisplay))
+	}
 
 	// Created
 	if !prof.CreatedAt.IsZero() {
@@ -242,6 +289,19 @@ func (p *DetailPanel) View() string {
 		return p.styles.Border.Width(p.width - 2).Render(inner)
 	}
 	return p.styles.Border.Render(inner)
+}
+
+// formatDurationFull formats duration for details view.
+func formatDurationFull(d time.Duration) string {
+	if d < time.Minute {
+		return "less than a minute"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%d minutes", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	return fmt.Sprintf("%d hours %d minutes", hours, minutes)
 }
 
 // renderRow renders a label-value row.

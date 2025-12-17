@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -462,11 +463,14 @@ func (m Model) syncProfilesPanel() {
 	infos := make([]ProfileInfo, len(profiles))
 	for i, p := range profiles {
 		infos[i] = ProfileInfo{
-			Name:     p.Name,
-			AuthMode: "oauth", // Default, TODO: get from actual profile
-			LoggedIn: true,    // TODO: get actual status
-			Locked:   false,   // TODO: get actual lock status
-			IsActive: p.IsActive,
+			Name:         p.Name,
+			AuthMode:     "oauth",               // Default, TODO: get from actual profile
+			LoggedIn:     true,                  // TODO: get actual status
+			Locked:       false,                 // TODO: get actual lock status
+			IsActive:     p.IsActive,
+			HealthStatus: health.StatusUnknown, // TODO: get from health store
+			ErrorCount:   0,                     // TODO: get from health store
+			Penalty:      0,                     // TODO: get from health store
 		}
 	}
 	m.profilesPanel.SetProfiles(infos)
@@ -488,13 +492,16 @@ func (m Model) syncDetailPanel() {
 
 	prof := profiles[m.selected]
 	detail := &DetailInfo{
-		Name:     prof.Name,
-		Provider: m.currentProvider(),
-		AuthMode: "oauth",  // TODO: get from actual profile
-		LoggedIn: true,     // TODO: get actual status
-		Locked:   false,    // TODO: get actual lock status
-		Path:     "",       // TODO: get from actual profile
-		Account:  "",       // TODO: get from actual profile
+		Name:         prof.Name,
+		Provider:     m.currentProvider(),
+		AuthMode:     "oauth",               // TODO: get from actual profile
+		LoggedIn:     true,                  // TODO: get actual status
+		Locked:       false,                 // TODO: get actual lock status
+		Path:         "",                    // TODO: get from actual profile
+		Account:      "",                    // TODO: get from actual profile
+		HealthStatus: health.StatusUnknown, // TODO: get from health store
+		ErrorCount:   0,                     // TODO: get from health store
+		Penalty:      0,                     // TODO: get from health store
 	}
 	m.detailPanel.SetProfile(detail)
 }

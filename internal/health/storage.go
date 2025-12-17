@@ -15,48 +15,6 @@ import (
 	"time"
 )
 
-// HealthStatus represents the overall health state of a profile.
-type HealthStatus int
-
-const (
-	// StatusUnknown indicates health cannot be determined.
-	StatusUnknown HealthStatus = iota
-	// StatusHealthy indicates the profile is in good standing (token valid >1hr, no recent errors).
-	StatusHealthy
-	// StatusWarning indicates potential issues (token expiring <1hr or recent errors).
-	StatusWarning
-	// StatusCritical indicates the profile needs attention (token expired or many errors).
-	StatusCritical
-)
-
-// String returns the string representation of a HealthStatus.
-func (s HealthStatus) String() string {
-	switch s {
-	case StatusHealthy:
-		return "healthy"
-	case StatusWarning:
-		return "warning"
-	case StatusCritical:
-		return "critical"
-	default:
-		return "unknown"
-	}
-}
-
-// Icon returns the emoji icon for a HealthStatus.
-func (s HealthStatus) Icon() string {
-	switch s {
-	case StatusHealthy:
-		return "🟢"
-	case StatusWarning:
-		return "🟡"
-	case StatusCritical:
-		return "🔴"
-	default:
-		return "⚪"
-	}
-}
-
 // ProfileHealth holds health metadata for a single profile.
 type ProfileHealth struct {
 	// TokenExpiresAt is when the OAuth token expires.
@@ -347,47 +305,6 @@ func (s *Storage) GetStatus(provider, name string) (HealthStatus, error) {
 	}
 
 	return CalculateStatus(health), nil
-}
-
-// CalculateStatus determines the health status from ProfileHealth data.
-func CalculateStatus(health *ProfileHealth) HealthStatus {
-	if health == nil {
-		return StatusUnknown
-	}
-
-	// Check token expiry
-	if !health.TokenExpiresAt.IsZero() {
-		ttl := time.Until(health.TokenExpiresAt)
-		if ttl <= 0 {
-			return StatusCritical // Expired
-		}
-		if ttl < 15*time.Minute {
-			return StatusCritical // About to expire
-		}
-		if ttl < time.Hour {
-			return StatusWarning // Expiring soon
-		}
-	}
-
-	// Check error count
-	if health.ErrorCount1h >= 3 {
-		return StatusCritical // Many recent errors
-	}
-	if health.ErrorCount1h > 0 {
-		return StatusWarning // Some errors
-	}
-
-	// Check penalty
-	if health.Penalty >= 1.0 {
-		return StatusWarning // High penalty
-	}
-
-	// If we have token info and it's valid, healthy
-	if !health.TokenExpiresAt.IsZero() {
-		return StatusHealthy
-	}
-
-	return StatusUnknown
 }
 
 // ListProfiles returns all profiles with health data.

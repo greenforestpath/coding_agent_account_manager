@@ -7,18 +7,23 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // ProfileInfo represents a profile with all displayable information.
 type ProfileInfo struct {
-	Name      string
-	AuthMode  string
-	LoggedIn  bool
-	Locked    bool
-	LastUsed  time.Time
-	Account   string
-	IsActive  bool
+	Name         string
+	AuthMode     string
+	LoggedIn     bool
+	Locked       bool
+	LastUsed     time.Time
+	Account      string
+	IsActive     bool
+	HealthStatus health.HealthStatus
+	TokenExpiry  time.Time
+	ErrorCount   int
+	Penalty      float64
 }
 
 // ProfilesPanel renders the center panel showing profiles for the selected provider.
@@ -91,6 +96,47 @@ func DefaultProfilesPanelStyles() ProfilesPanelStyles {
 			Italic(true).
 			Padding(2, 2),
 	}
+}
+
+// StatusStyle returns the style for a given health status.
+func (s ProfilesPanelStyles) StatusStyle(status health.HealthStatus) lipgloss.Style {
+	switch status {
+	case health.StatusHealthy:
+		return s.StatusOK
+	case health.StatusWarning:
+		return lipgloss.NewStyle().Foreground(colorYellow)
+	case health.StatusCritical:
+		return s.StatusBad
+	default:
+		return lipgloss.NewStyle().Foreground(colorGray)
+	}
+}
+
+// formatTUIStatus formats the health status string.
+func formatTUIStatus(pi *ProfileInfo) string {
+	icon := pi.HealthStatus.Icon()
+
+	if pi.TokenExpiry.IsZero() {
+		return icon + " Unknown"
+	}
+
+	ttl := time.Until(pi.TokenExpiry)
+	if ttl <= 0 {
+		return icon + " Expired"
+	}
+
+	return icon + " " + formatDuration(ttl)
+}
+
+// formatDuration formats a duration concisely for TUI.
+func formatDuration(d time.Duration) string {
+	if d < time.Hour {
+		return fmt.Sprintf("%dm left", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%dh left", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd left", int(d.Hours()/24))
 }
 
 // NewProfilesPanel creates a new profiles panel.
@@ -191,7 +237,7 @@ func (p *ProfilesPanel) View() string {
 	}{
 		name:     16,
 		auth:     8,
-		status:   10,
+		status:   14, // Increased from 10
 		lastUsed: 12,
 		account:  16,
 	}
@@ -215,13 +261,11 @@ func (p *ProfilesPanel) View() string {
 			indicator = p.styles.ActiveIndicator.Render("● ")
 		}
 
-		// Status icons
-		var statusStr string
-		if prof.LoggedIn {
-			statusStr = p.styles.StatusOK.Render("✓")
-		} else {
-			statusStr = p.styles.StatusBad.Render("✗")
-		}
+		// Status display
+		statusText := formatTUIStatus(&prof)
+		statusStyle := p.styles.StatusStyle(prof.HealthStatus)
+		statusStr := statusStyle.Render(statusText)
+
 		if prof.Locked {
 			statusStr += " " + p.styles.LockIcon.Render("🔒")
 		}
@@ -238,22 +282,32 @@ func (p *ProfilesPanel) View() string {
 			account = account[:colWidths.account-3] + "..."
 		}
 
-		// Build row
-		cells := []string{
-			indicator + padRight(truncate(prof.Name, colWidths.name-2), colWidths.name-2),
-			padRight(prof.AuthMode, colWidths.auth),
-			padRight(statusStr, colWidths.status),
-			padRight(lastUsed, colWidths.lastUsed),
-			padRight(account, colWidths.account),
-		}
-		row := strings.Join(cells, " ")
+		// Build row cells with proper padding
+		paddedName := padRight(truncate(prof.Name, colWidths.name-2), colWidths.name-2)
+		paddedAuth := padRight(prof.AuthMode, colWidths.auth)
+		
+		// Status padding
+		// statusText has the emoji and text.
+		paddedStatusText := padRight(statusText, colWidths.status)
+		renderedStatus := statusStyle.Render(paddedStatusText)
+		
+		paddedLastUsed := padRight(lastUsed, colWidths.lastUsed)
+		paddedAccount := padRight(account, colWidths.account)
+		
+		rowStr := fmt.Sprintf("%s %s %s %s %s", 
+			indicator+paddedName,
+			paddedAuth,
+			renderedStatus,
+			paddedLastUsed,
+			paddedAccount,
+		)
 
 		// Apply row style
 		style := p.styles.Row
 		if i == p.selected {
 			style = p.styles.SelectedRow
 		}
-		rows = append(rows, style.Render(row))
+		rows = append(rows, style.Render(rowStr))
 	}
 
 	// Combine header and rows
