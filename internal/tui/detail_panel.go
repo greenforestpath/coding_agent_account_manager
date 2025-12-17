@@ -210,10 +210,10 @@ func (p *DetailPanel) View() string {
 	}{
 		{"Enter", fmt.Sprintf("Run %s", prof.Provider)},
 		{"l", "Login/refresh"},
-		{"o", "Open in browser"},
 		{"e", "Edit profile"},
+		{"o", "Open in browser"},
 		{"d", "Delete profile"},
-		{"b", "Backup current auth"},
+		{"/", "Search profiles"},
 	}
 
 	var actionRows []string

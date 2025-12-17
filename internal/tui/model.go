@@ -647,12 +647,14 @@ Navigation
   ↑/k     Move up
   ↓/j     Move down
   ←/h     Previous provider
-  →/l     Next provider
+  →       Next provider
   tab     Cycle providers
+  /       Search/filter profiles
 
 Profile Actions
   enter   Activate selected profile
   l       Login/refresh auth
+  e       Edit profile
   o       Open account page in browser
   d       Delete profile (with confirmation)
 
