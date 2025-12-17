@@ -43,8 +43,9 @@ type Model struct {
 	err    error
 
 	// UI components
-	keys   keyMap
-	styles Styles
+	keys          keyMap
+	styles        Styles
+	providerPanel *ProviderPanel
 
 	// Status message
 	statusMsg string
@@ -70,6 +71,7 @@ func NewWithProviders(providers []string) Model {
 		state:          stateList,
 		keys:           defaultKeyMap(),
 		styles:         DefaultStyles(),
+		providerPanel:  NewProviderPanel(providers),
 	}
 }
 
@@ -117,6 +119,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case profilesLoadedMsg:
 		m.profiles = msg.profiles
+		// Update provider panel counts
+		if m.providerPanel != nil {
+			counts := make(map[string]int)
+			for provider, profiles := range m.profiles {
+				counts[provider] = len(profiles)
+			}
+			m.providerPanel.SetProfileCounts(counts)
+		}
 		return m, nil
 
 	case errMsg:
@@ -199,6 +209,20 @@ func (m Model) currentProvider() string {
 	return ""
 }
 
+// updateProviderCounts updates the provider panel with current profile counts.
+func (m *Model) updateProviderCounts() {
+	counts := make(map[string]int)
+	for provider, profiles := range m.profiles {
+		counts[provider] = len(profiles)
+	}
+	m.providerPanel.SetProfileCounts(counts)
+}
+
+// syncProviderPanel syncs the provider panel state with the model.
+func (m *Model) syncProviderPanel() {
+	m.providerPanel.SetActiveProvider(m.activeProvider)
+}
+
 // View implements tea.Model.
 func (m Model) View() string {
 	if m.width == 0 {
@@ -218,23 +242,35 @@ func (m Model) mainView() string {
 	// Header
 	header := m.styles.Header.Render("caam - Coding Agent Account Manager")
 
-	// Provider tabs
-	tabs := m.renderProviderTabs()
+	// Calculate panel dimensions
+	providerPanelWidth := 20
+	contentHeight := m.height - 5 // Header + status bar
 
-	// Profile list
+	// Sync and render provider panel
+	m.providerPanel.SetActiveProvider(m.activeProvider)
+	m.providerPanel.SetSize(providerPanelWidth, contentHeight)
+	providerPanelView := m.providerPanel.View()
+
+	// Profile list (center panel)
 	profiles := m.renderProfileList()
+
+	// Create panels side by side
+	panels := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		providerPanelView,
+		"  ", // Spacing
+		profiles,
+	)
 
 	// Status bar
 	status := m.renderStatusBar()
 
-	// Combine
+	// Combine header, panels, and status
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
 		header,
 		"",
-		tabs,
-		"",
-		profiles,
+		panels,
 	)
 
 	// Add status bar at bottom
