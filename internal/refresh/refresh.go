@@ -3,6 +3,7 @@ package refresh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,7 +42,7 @@ func RefreshProfile(ctx context.Context, provider, profile string, vault *authfi
 	case "gemini":
 		return refreshGemini(ctx, provider, profile, store, vaultPath)
 	default:
-		return fmt.Errorf("refresh not supported for provider: %s", provider)
+		return &UnsupportedError{Provider: provider, Reason: "provider not supported"}
 	}
 }
 
@@ -98,9 +99,27 @@ func refreshGemini(ctx context.Context, provider, profile string, store *health.
 		return fmt.Errorf("parse gemini auth: %w", err)
 	}
 
-	adc, err := ReadADC(info.Source)
-	if err != nil {
-		return fmt.Errorf("read adc: %w", err)
+	settingsPath := filepath.Join(vaultPath, "settings.json")
+	oauthCredPath := filepath.Join(vaultPath, "oauth_credentials.json")
+
+	var adc *ADC
+	for _, candidate := range []string{oauthCredPath, settingsPath} {
+		parsed, readErr := ReadADC(candidate)
+		if readErr == nil {
+			adc = parsed
+			break
+		}
+		if errors.Is(readErr, os.ErrNotExist) {
+			continue
+		}
+		if errors.Is(readErr, ErrADCIncomplete) {
+			continue
+		}
+		return fmt.Errorf("read oauth credentials: %w", readErr)
+	}
+
+	if adc == nil {
+		return &UnsupportedError{Provider: provider, Reason: "missing oauth client credentials (expected oauth_credentials.json with client_id/client_secret/refresh_token)"}
 	}
 
 	resp, err := RefreshGeminiToken(ctx, adc.ClientID, adc.ClientSecret, adc.RefreshToken)
@@ -108,8 +127,24 @@ func refreshGemini(ctx context.Context, provider, profile string, store *health.
 		return fmt.Errorf("refresh api: %w", err)
 	}
 
-	if err := UpdateGeminiHealth(store, provider, profile, resp); err != nil {
-		return fmt.Errorf("update health: %w", err)
+	target := settingsPath
+	if _, err := os.Stat(target); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat gemini settings: %w", err)
+		}
+		target = info.Source
+	}
+
+	if target != "" {
+		if err := UpdateGeminiAuth(target, resp); err != nil {
+			return fmt.Errorf("update auth: %w", err)
+		}
+	}
+
+	if store != nil {
+		if err := UpdateGeminiHealth(store, provider, profile, resp); err != nil {
+			return fmt.Errorf("update health: %w", err)
+		}
 	}
 
 	return nil

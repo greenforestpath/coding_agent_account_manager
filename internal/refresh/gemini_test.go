@@ -119,3 +119,52 @@ func TestUpdateGeminiHealth(t *testing.T) {
 		t.Error("expiry too soon")
 	}
 }
+
+func TestUpdateGeminiAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.json")
+
+	original := map[string]any{
+		"access_token":  "old-access",
+		"refresh_token": "old-refresh",
+		"expiry":        "2020-01-01T00:00:00Z",
+		"other_field":   "preserve-me",
+	}
+	raw, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() error = %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	resp := &GoogleTokenResponse{
+		AccessToken: "new-access",
+		ExpiresIn:   3600,
+		TokenType:   "Bearer",
+	}
+
+	if err := UpdateGeminiAuth(path, resp); err != nil {
+		t.Fatalf("UpdateGeminiAuth() error = %v", err)
+	}
+
+	updatedRaw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	var updated map[string]any
+	if err := json.Unmarshal(updatedRaw, &updated); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if got := updated["access_token"]; got != "new-access" {
+		t.Fatalf("access_token = %v, want %v", got, "new-access")
+	}
+	if got := updated["other_field"]; got != "preserve-me" {
+		t.Fatalf("other_field = %v, want %v", got, "preserve-me")
+	}
+	if got := updated["expiry"]; got == "" {
+		t.Fatalf("expiry is empty")
+	}
+}

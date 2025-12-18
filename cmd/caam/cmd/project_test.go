@@ -7,6 +7,7 @@ import (
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
 )
 
@@ -102,6 +103,11 @@ func TestActivate_UsesProjectAssociationWhenProfileOmitted(t *testing.T) {
 	oldProjectStore := projectStore
 	projectStore = project.NewStore(filepath.Join(tmpDir, "projects.json"))
 	t.Cleanup(func() { projectStore = oldProjectStore })
+
+	// Initialize health store for refresh checks
+	oldHealthStore := healthStore
+	healthStore = health.NewStorage(filepath.Join(tmpDir, "health.json"))
+	t.Cleanup(func() { healthStore = oldHealthStore })
 
 	cwd := filepath.Join(tmpDir, "repo")
 	if err := os.MkdirAll(cwd, 0700); err != nil {

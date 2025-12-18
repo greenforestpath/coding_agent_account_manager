@@ -121,12 +121,19 @@ func isTerminal() bool {
 	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-// getProfileHealth returns health info for a profile by parsing auth files.
+// getProfileHealth returns health info for a profile by parsing auth files and checking metadata.
 func getProfileHealth(tool, profileName string) *health.ProfileHealth {
+	// Start with stored health data (for error counts, penalties, and fallback expiry)
+	ph := &health.ProfileHealth{}
+	if healthStore != nil {
+		stored, err := healthStore.GetProfile(tool, profileName)
+		if err == nil && stored != nil {
+			ph = stored
+		}
+	}
+
 	// Get auth files from vault profile
 	vaultPath := vault.ProfilePath(tool, profileName)
-
-	ph := &health.ProfileHealth{}
 
 	// Try to parse expiry based on tool type
 	var expInfo *health.ExpiryInfo
@@ -143,7 +150,8 @@ func getProfileHealth(tool, profileName string) *health.ProfileHealth {
 		expInfo, err = health.ParseGeminiExpiry(vaultPath)
 	}
 
-	if err == nil && expInfo != nil {
+	// If file parsing succeeds and provides an expiry, treat it as authoritative
+	if err == nil && expInfo != nil && !expInfo.ExpiresAt.IsZero() {
 		ph.TokenExpiresAt = expInfo.ExpiresAt
 	}
 

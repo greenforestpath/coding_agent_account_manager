@@ -34,6 +34,10 @@ func RefreshClaudeToken(ctx context.Context, refreshToken string) (*TokenRespons
 		return nil, fmt.Errorf("refresh token is empty")
 	}
 
+	if err := validateTokenEndpoint(ClaudeTokenURL, []string{"anthropic.com"}); err != nil {
+		return nil, err
+	}
+
 	data := url.Values{}
 	data.Set("client_id", ClaudeClientID)
 	data.Set("grant_type", "refresh_token")

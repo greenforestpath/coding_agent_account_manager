@@ -27,6 +27,10 @@ func RefreshCodexToken(ctx context.Context, refreshToken string) (*TokenResponse
 		return nil, fmt.Errorf("refresh token is empty")
 	}
 
+	if err := validateTokenEndpoint(CodexTokenURL, []string{"auth.openai.com"}); err != nil {
+		return nil, err
+	}
+
 	body := map[string]string{
 		"client_id":     CodexClientID,
 		"grant_type":    "refresh_token",

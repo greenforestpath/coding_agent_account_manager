@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -125,6 +126,10 @@ func resolveActivateProfile(tool string) (profileName string, source string, err
 }
 
 func refreshIfNeeded(ctx context.Context, provider, profile string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Try to get health data. If missing, we might want to populate it?
 	// But RefreshProfile uses vault path.
 	// If we don't have health data, we don't know expiry, so we can't decide to refresh.
@@ -140,6 +145,10 @@ func refreshIfNeeded(ctx context.Context, provider, profile string) error {
 
 	err := refresh.RefreshProfile(ctx, provider, profile, vault, healthStore)
 	if err != nil {
+		if errors.Is(err, refresh.ErrUnsupported) {
+			fmt.Printf("skipped (%v)\n", err)
+			return nil
+		}
 		fmt.Printf("failed (%v)\n", err)
 		return nil // Continue activation even if refresh fails
 	}

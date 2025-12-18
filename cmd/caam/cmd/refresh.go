@@ -175,6 +175,13 @@ func refreshTool(ctx context.Context, tool string, threshold time.Duration, dryR
 		}
 
 		if err := refresh.RefreshProfile(ctx, tool, profile, vault, healthStore); err != nil {
+			if errors.Is(err, refresh.ErrUnsupported) {
+				skipped++
+				if !quiet {
+					fmt.Printf("skipped (%v)\n", err)
+				}
+				continue
+			}
 			failed++
 			if !quiet {
 				fmt.Printf("failed (%v)\n", err)
@@ -229,6 +236,12 @@ func refreshSingle(ctx context.Context, tool, profile string, threshold time.Dur
 	}
 
 	if err := refresh.RefreshProfile(ctx, tool, profile, vault, healthStore); err != nil {
+		if errors.Is(err, refresh.ErrUnsupported) {
+			if !quiet {
+				fmt.Printf("skipped (%v)\n", err)
+			}
+			return nil
+		}
 		if !quiet {
 			fmt.Printf("failed (%v)\n", err)
 		}

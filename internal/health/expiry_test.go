@@ -11,12 +11,12 @@ func TestParseOAuthFile(t *testing.T) {
 	testdata := "testdata"
 
 	tests := []struct {
-		name            string
-		file            string
-		expectError     bool
-		expectExpiry    bool
-		expectRefresh   bool
-		expiryAfterNow  bool
+		name           string
+		file           string
+		expectError    bool
+		expectExpiry   bool
+		expectRefresh  bool
+		expiryAfterNow bool
 	}{
 		{
 			name:           "claude oauth with ISO8601 expiry",
@@ -340,6 +340,32 @@ func TestParseClaudeExpiry(t *testing.T) {
 	}
 }
 
+func TestParseClaudeExpiry_FindsFlatAuthJSONInDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	authPath := filepath.Join(tmpDir, "auth.json")
+	authData := `{
+		"access_token": "test_access",
+		"refresh_token": "test_refresh",
+		"expires_at": 1734523200,
+		"token_type": "Bearer"
+	}`
+	if err := os.WriteFile(authPath, []byte(authData), 0600); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	info, err := ParseClaudeExpiry(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Source != authPath {
+		t.Errorf("expected source %s, got %s", authPath, info.Source)
+	}
+	if !info.HasRefreshToken {
+		t.Error("expected HasRefreshToken to be true")
+	}
+}
+
 func TestParseGeminiExpiry(t *testing.T) {
 	// Create a temp directory
 	tmpDir := t.TempDir()
@@ -368,6 +394,22 @@ func TestParseGeminiExpiry(t *testing.T) {
 	}
 	if info.ExpiresAt.IsZero() {
 		t.Error("expected expiry to be set")
+	}
+}
+
+func TestParseGeminiExpiry_OAuthCredentialsFileWithoutSettingsReturnsNoExpiry(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// oauth_credentials.json exists but contains no expiry/refresh token.
+	// This should surface as ErrNoExpiry (not ErrNoAuthFile).
+	oauthPath := filepath.Join(tmpDir, "oauth_credentials.json")
+	if err := os.WriteFile(oauthPath, []byte(`{}`), 0600); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	_, err := ParseGeminiExpiry(tmpDir)
+	if err != ErrNoExpiry {
+		t.Fatalf("expected ErrNoExpiry, got %v", err)
 	}
 }
 

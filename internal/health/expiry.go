@@ -54,39 +54,66 @@ type ExpiryInfo struct {
 //	  "expires_at": 1734451200  // Unix timestamp
 //	}
 func ParseClaudeExpiry(authDir string) (*ExpiryInfo, error) {
-	// Try ~/.claude.json first
 	homeDir, _ := os.UserHomeDir()
-	claudeJsonPath := filepath.Join(homeDir, ".claude.json")
-	if authDir != "" {
-		claudeJsonPath = filepath.Join(authDir, ".claude.json")
+
+	if authDir == "" {
+		// System state probing.
+		claudeJsonPath := filepath.Join(homeDir, ".claude.json")
+		info, err := parseOAuthFile(claudeJsonPath)
+		if err == nil {
+			info.Source = claudeJsonPath
+			return info, nil
+		}
+
+		xdgConfig := os.Getenv("XDG_CONFIG_HOME")
+		if xdgConfig == "" {
+			xdgConfig = filepath.Join(homeDir, ".config")
+		}
+		authJsonPath := filepath.Join(xdgConfig, "claude-code", "auth.json")
+
+		info, err = parseOAuthFile(authJsonPath)
+		if err == nil {
+			info.Source = authJsonPath
+			return info, nil
+		}
+
+		if _, statErr := os.Stat(claudeJsonPath); os.IsNotExist(statErr) {
+			if _, statErr2 := os.Stat(authJsonPath); os.IsNotExist(statErr2) {
+				return nil, ErrNoAuthFile
+			}
+		}
+
+		return nil, ErrNoExpiry
 	}
 
+	// Vault/profile probing. Vault profiles store the optional XDG auth file as a
+	// flat "auth.json" next to ".claude.json" (see README vault structure).
+	claudeJsonPath := filepath.Join(authDir, ".claude.json")
 	info, err := parseOAuthFile(claudeJsonPath)
 	if err == nil {
 		info.Source = claudeJsonPath
 		return info, nil
 	}
 
-	// Try ~/.config/claude-code/auth.json
-	xdgConfig := os.Getenv("XDG_CONFIG_HOME")
-	if xdgConfig == "" {
-		xdgConfig = filepath.Join(homeDir, ".config")
-	}
-	if authDir != "" {
-		xdgConfig = authDir
-	}
-	authJsonPath := filepath.Join(xdgConfig, "claude-code", "auth.json")
-
-	info, err = parseOAuthFile(authJsonPath)
+	flatAuthPath := filepath.Join(authDir, "auth.json")
+	info, err = parseOAuthFile(flatAuthPath)
 	if err == nil {
-		info.Source = authJsonPath
+		info.Source = flatAuthPath
 		return info, nil
 	}
 
-	// Check if any auth file exists at all
+	nestedAuthPath := filepath.Join(authDir, "claude-code", "auth.json")
+	info, err = parseOAuthFile(nestedAuthPath)
+	if err == nil {
+		info.Source = nestedAuthPath
+		return info, nil
+	}
+
 	if _, statErr := os.Stat(claudeJsonPath); os.IsNotExist(statErr) {
-		if _, statErr2 := os.Stat(authJsonPath); os.IsNotExist(statErr2) {
-			return nil, ErrNoAuthFile
+		if _, statErr2 := os.Stat(flatAuthPath); os.IsNotExist(statErr2) {
+			if _, statErr3 := os.Stat(nestedAuthPath); os.IsNotExist(statErr3) {
+				return nil, ErrNoAuthFile
+			}
 		}
 	}
 
@@ -164,8 +191,9 @@ func ParseGeminiExpiry(authDir string) (*ExpiryInfo, error) {
 	}
 
 	// Try gcloud ADC format (only if checking system state)
+	adcPath := ""
 	if checkSystem {
-		adcPath := getADCPath()
+		adcPath = getADCPath()
 		info, err = parseADCFile(adcPath)
 		if err == nil {
 			info.Source = adcPath
@@ -173,8 +201,16 @@ func ParseGeminiExpiry(authDir string) (*ExpiryInfo, error) {
 		}
 	}
 
-	// Check if settings.json exists
-	if _, statErr := os.Stat(settingsPath); os.IsNotExist(statErr) {
+	// Report ErrNoAuthFile only when *none* of the supported auth files exist.
+	_, settingsErr := os.Stat(settingsPath)
+	_, oauthErr := os.Stat(oauthPath)
+	adcExists := false
+	if checkSystem && adcPath != "" {
+		if _, err := os.Stat(adcPath); err == nil {
+			adcExists = true
+		}
+	}
+	if os.IsNotExist(settingsErr) && os.IsNotExist(oauthErr) && !adcExists {
 		return nil, ErrNoAuthFile
 	}
 

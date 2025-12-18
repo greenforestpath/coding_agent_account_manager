@@ -3,6 +3,7 @@ package refresh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 var (
 	GeminiTokenURL = "https://oauth2.googleapis.com/token"
 )
+
+var ErrADCIncomplete = errors.New("ADC file missing required fields")
 
 // ADC represents Google Application Default Credentials.
 type ADC struct {
@@ -39,6 +42,10 @@ type GoogleTokenResponse struct {
 func RefreshGeminiToken(ctx context.Context, clientID, clientSecret, refreshToken string) (*GoogleTokenResponse, error) {
 	if refreshToken == "" {
 		return nil, fmt.Errorf("refresh token is empty")
+	}
+
+	if err := validateTokenEndpoint(GeminiTokenURL, []string{"oauth2.googleapis.com"}); err != nil {
+		return nil, err
 	}
 
 	form := url.Values{}
@@ -86,10 +93,64 @@ func ReadADC(path string) (*ADC, error) {
 	}
 
 	if adc.ClientID == "" || adc.ClientSecret == "" || adc.RefreshToken == "" {
-		return nil, fmt.Errorf("ADC file missing required fields (client_id, client_secret, refresh_token)")
+		return nil, fmt.Errorf("%w (need client_id, client_secret, refresh_token)", ErrADCIncomplete)
 	}
 
 	return &adc, nil
+}
+
+// UpdateGeminiAuth updates Gemini auth settings with a refreshed access token and expiry.
+func UpdateGeminiAuth(path string, resp *GoogleTokenResponse) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read auth file: %w", err)
+	}
+
+	var auth map[string]interface{}
+	if err := json.Unmarshal(data, &auth); err != nil {
+		return fmt.Errorf("parse auth file: %w", err)
+	}
+
+	// Access token (support both snake_case and camelCase).
+	if _, ok := auth["access_token"]; ok {
+		auth["access_token"] = resp.AccessToken
+	} else if _, ok := auth["accessToken"]; ok {
+		auth["accessToken"] = resp.AccessToken
+	} else {
+		auth["access_token"] = resp.AccessToken
+	}
+
+	// Expiry: prefer existing field name when possible.
+	if resp.ExpiresIn > 0 {
+		expiresAt := time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second).UTC().Format(time.RFC3339)
+
+		if _, ok := auth["expiry"]; ok {
+			auth["expiry"] = expiresAt
+		} else if _, ok := auth["expires_at"]; ok {
+			auth["expires_at"] = expiresAt
+		} else if _, ok := auth["expiresAt"]; ok {
+			auth["expiresAt"] = expiresAt
+		} else {
+			auth["expiry"] = expiresAt
+		}
+	}
+
+	updatedData, err := json.MarshalIndent(auth, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal updated auth: %w", err)
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, updatedData, 0600); err != nil {
+		return fmt.Errorf("write temp file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename file: %w", err)
+	}
+
+	return nil
 }
 
 // UpdateGeminiHealth updates the health metadata with the new expiry.
