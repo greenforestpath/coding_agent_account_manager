@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
+import (
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
+)
 
 type profilesChangedMsg struct {
 	event watcher.Event
@@ -13,6 +16,12 @@ type watcherReadyMsg struct {
 
 type badgeExpiredMsg struct {
 	key string
+}
+
+type projectContextLoadedMsg struct {
+	cwd      string
+	resolved *project.Resolved
+	err      error
 }
 
 func eventTypeVerb(t watcher.EventType) string {

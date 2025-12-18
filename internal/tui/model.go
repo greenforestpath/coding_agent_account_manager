@@ -3,12 +3,14 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -72,6 +74,11 @@ type Model struct {
 	watcher   *watcher.Watcher
 	badges    map[string]profileBadge
 
+	// Project context
+	cwd            string
+	projectStore   *project.Store
+	projectContext *project.Resolved
+
 	// Confirmation state
 	pendingAction confirmAction
 	searchQuery   string
@@ -89,6 +96,7 @@ func New() Model {
 
 // NewWithProviders creates a new TUI model with the specified providers.
 func NewWithProviders(providers []string) Model {
+	cwd, _ := os.Getwd()
 	profilesPanel := NewProfilesPanel()
 	if len(providers) > 0 {
 		profilesPanel.SetProvider(providers[0])
@@ -106,6 +114,8 @@ func NewWithProviders(providers []string) Model {
 		detailPanel:    NewDetailPanel(),
 		vaultPath:      authfile.DefaultVaultPath(),
 		badges:         make(map[string]profileBadge),
+		cwd:            cwd,
+		projectStore:   project.NewStore(""),
 	}
 }
 
@@ -115,7 +125,18 @@ func (m Model) Init() tea.Cmd {
 		tea.EnterAltScreen,
 		m.loadProfiles,
 		m.initWatcher(),
+		m.loadProjectContext(),
 	)
+}
+
+func (m Model) loadProjectContext() tea.Cmd {
+	return func() tea.Msg {
+		if m.projectStore == nil || m.cwd == "" {
+			return projectContextLoadedMsg{}
+		}
+		resolved, err := m.projectStore.Resolve(m.cwd)
+		return projectContextLoadedMsg{cwd: m.cwd, resolved: resolved, err: err}
+	}
 }
 
 func (m Model) initWatcher() tea.Cmd {
@@ -206,6 +227,18 @@ type errMsg struct {
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case projectContextLoadedMsg:
+		if msg.err != nil {
+			m.statusMsg = msg.err.Error()
+			return m, nil
+		}
+		if msg.cwd != "" {
+			m.cwd = msg.cwd
+		}
+		m.projectContext = msg.resolved
+		m.syncProfilesPanel()
+		return m, nil
+
 	case watcherReadyMsg:
 		if msg.err != nil {
 			// Graceful degradation: keep the TUI usable without hot reload.
@@ -370,6 +403,9 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Search):
 		return m.handleEnterSearchMode()
+
+	case key.Matches(msg, m.keys.Project):
+		return m.handleSetProjectAssociation()
 	}
 
 	return m, nil
@@ -435,6 +471,7 @@ func (m *Model) applySearchFilter() {
 
 	provider := m.currentProvider()
 	profiles := m.profiles[provider]
+	projectDefault := m.projectDefaultForProvider(provider)
 
 	// Filter profiles by name (case-insensitive)
 	var filtered []ProfileInfo
@@ -443,12 +480,13 @@ func (m *Model) applySearchFilter() {
 	for _, p := range profiles {
 		if query == "" || strings.Contains(strings.ToLower(p.Name), query) {
 			filtered = append(filtered, ProfileInfo{
-				Name:     p.Name,
-				Badge:    m.badgeFor(provider, p.Name),
-				AuthMode: "oauth",
-				LoggedIn: true,
-				Locked:   false,
-				IsActive: p.IsActive,
+				Name:           p.Name,
+				Badge:          m.badgeFor(provider, p.Name),
+				ProjectDefault: projectDefault != "" && p.Name == projectDefault,
+				AuthMode:       "oauth",
+				LoggedIn:       true,
+				Locked:         false,
+				IsActive:       p.IsActive,
 			})
 		}
 	}
@@ -529,6 +567,46 @@ func (m Model) handleEnterSearchMode() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleSetProjectAssociation() (tea.Model, tea.Cmd) {
+	provider := m.currentProvider()
+	profiles := m.currentProfiles()
+	if provider == "" || m.selected < 0 || m.selected >= len(profiles) {
+		m.statusMsg = "No profile selected"
+		return m, nil
+	}
+
+	if m.cwd == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			m.cwd = cwd
+		}
+	}
+	if m.cwd == "" {
+		m.statusMsg = "Unable to determine current directory"
+		return m, nil
+	}
+
+	if m.projectStore == nil {
+		m.projectStore = project.NewStore("")
+	}
+
+	profileName := profiles[m.selected].Name
+	if err := m.projectStore.SetAssociation(m.cwd, provider, profileName); err != nil {
+		m.statusMsg = err.Error()
+		return m, nil
+	}
+
+	resolved, err := m.projectStore.Resolve(m.cwd)
+	if err != nil {
+		m.statusMsg = err.Error()
+		return m, nil
+	}
+
+	m.projectContext = resolved
+	m.syncProfilesPanel()
+	m.statusMsg = fmt.Sprintf("Associated %s → %s", provider, profileName)
+	return m, nil
+}
+
 // executeConfirmedAction executes the pending confirmed action.
 func (m Model) executeConfirmedAction() (tea.Model, tea.Cmd) {
 	switch m.pendingAction {
@@ -584,18 +662,20 @@ func (m Model) syncProfilesPanel() {
 
 	// Convert Profile to ProfileInfo
 	profiles := m.profiles[provider]
+	projectDefault := m.projectDefaultForProvider(provider)
 	infos := make([]ProfileInfo, len(profiles))
 	for i, p := range profiles {
 		infos[i] = ProfileInfo{
-			Name:         p.Name,
-			Badge:        m.badgeFor(provider, p.Name),
-			AuthMode:     "oauth", // Default, TODO: get from actual profile
-			LoggedIn:     true,    // TODO: get actual status
-			Locked:       false,   // TODO: get actual lock status
-			IsActive:     p.IsActive,
-			HealthStatus: health.StatusUnknown, // TODO: get from health store
-			ErrorCount:   0,                    // TODO: get from health store
-			Penalty:      0,                    // TODO: get from health store
+			Name:           p.Name,
+			Badge:          m.badgeFor(provider, p.Name),
+			ProjectDefault: projectDefault != "" && p.Name == projectDefault,
+			AuthMode:       "oauth", // Default, TODO: get from actual profile
+			LoggedIn:       true,    // TODO: get actual status
+			Locked:         false,   // TODO: get actual lock status
+			IsActive:       p.IsActive,
+			HealthStatus:   health.StatusUnknown, // TODO: get from health store
+			ErrorCount:     0,                    // TODO: get from health store
+			Penalty:        0,                    // TODO: get from health store
 		}
 	}
 	m.profilesPanel.SetProfiles(infos)
@@ -648,7 +728,11 @@ func (m Model) View() string {
 // mainView renders the main list view.
 func (m Model) mainView() string {
 	// Header
-	header := m.styles.Header.Render("caam - Coding Agent Account Manager")
+	headerLines := []string{m.styles.Header.Render("caam - Coding Agent Account Manager")}
+	if projectLine := m.projectContextLine(); projectLine != "" {
+		headerLines = append(headerLines, m.styles.StatusText.Render(projectLine))
+	}
+	header := lipgloss.JoinVertical(lipgloss.Left, headerLines...)
 
 	// Calculate panel dimensions
 	providerPanelWidth := 18
@@ -714,6 +798,43 @@ func (m Model) mainView() string {
 	}
 
 	return content
+}
+
+func (m Model) projectContextLine() string {
+	if m.cwd == "" {
+		return ""
+	}
+
+	provider := m.currentProvider()
+	if provider == "" {
+		return ""
+	}
+
+	if m.projectContext == nil {
+		return fmt.Sprintf("Project: %s (no association)", m.cwd)
+	}
+
+	profile := m.projectContext.Profiles[provider]
+	source := m.projectContext.Sources[provider]
+	if profile == "" || source == "" || source == "<default>" {
+		return fmt.Sprintf("Project: %s (no association)", m.cwd)
+	}
+
+	return fmt.Sprintf("Project: %s → %s", source, profile)
+}
+
+func (m Model) projectDefaultForProvider(provider string) string {
+	if provider == "" || m.projectContext == nil {
+		return ""
+	}
+
+	profile := m.projectContext.Profiles[provider]
+	source := m.projectContext.Sources[provider]
+	if profile == "" || source == "" || source == "<default>" {
+		return ""
+	}
+
+	return profile
 }
 
 // renderProviderTabs renders the provider selection tabs.
@@ -789,6 +910,7 @@ Profile Actions
   e       Edit profile
   o       Open account page in browser
   d       Delete profile (with confirmation)
+  p       Set project association (CWD)
 
 Other Actions
   b       Backup current auth state

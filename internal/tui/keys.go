@@ -12,13 +12,14 @@ type keyMap struct {
 	Tab   key.Binding
 
 	// Actions
-	Enter  key.Binding
-	Backup key.Binding
-	Delete key.Binding
-	Edit   key.Binding
-	Login  key.Binding
-	Open   key.Binding
-	Search key.Binding
+	Enter   key.Binding
+	Backup  key.Binding
+	Delete  key.Binding
+	Edit    key.Binding
+	Login   key.Binding
+	Open    key.Binding
+	Search  key.Binding
+	Project key.Binding
 
 	// Confirmation
 	Confirm key.Binding
@@ -80,6 +81,10 @@ func defaultKeyMap() keyMap {
 			key.WithKeys("/"),
 			key.WithHelp("/", "search profiles"),
 		),
+		Project: key.NewBinding(
+			key.WithKeys("p"),
+			key.WithHelp("p", "set project association"),
+		),
 		Confirm: key.NewBinding(
 			key.WithKeys("y", "enter"),
 			key.WithHelp("y/enter", "confirm"),
@@ -109,7 +114,7 @@ func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Left, k.Right},
 		{k.Enter, k.Backup, k.Delete, k.Edit},
-		{k.Login, k.Open, k.Search},
+		{k.Login, k.Open, k.Search, k.Project},
 		{k.Help, k.Quit},
 	}
 }

@@ -13,18 +13,19 @@ import (
 
 // ProfileInfo represents a profile with all displayable information.
 type ProfileInfo struct {
-	Name         string
-	Badge        string
-	AuthMode     string
-	LoggedIn     bool
-	Locked       bool
-	LastUsed     time.Time
-	Account      string
-	IsActive     bool
-	HealthStatus health.HealthStatus
-	TokenExpiry  time.Time
-	ErrorCount   int
-	Penalty      float64
+	Name           string
+	Badge          string
+	ProjectDefault bool
+	AuthMode       string
+	LoggedIn       bool
+	Locked         bool
+	LastUsed       time.Time
+	Account        string
+	IsActive       bool
+	HealthStatus   health.HealthStatus
+	TokenExpiry    time.Time
+	ErrorCount     int
+	Penalty        float64
 }
 
 // ProfilesPanel renders the center panel showing profiles for the selected provider.
@@ -48,6 +49,7 @@ type ProfilesPanelStyles struct {
 	StatusOK        lipgloss.Style
 	StatusBad       lipgloss.Style
 	LockIcon        lipgloss.Style
+	ProjectBadge    lipgloss.Style
 	Empty           lipgloss.Style
 }
 
@@ -91,6 +93,10 @@ func DefaultProfilesPanelStyles() ProfilesPanelStyles {
 
 		LockIcon: lipgloss.NewStyle().
 			Foreground(colorYellow),
+
+		ProjectBadge: lipgloss.NewStyle().
+			Foreground(colorCyan).
+			Bold(true),
 
 		Empty: lipgloss.NewStyle().
 			Foreground(colorGray).
@@ -302,6 +308,9 @@ func (p *ProfilesPanel) View() string {
 			paddedLastUsed,
 			paddedAccount,
 		)
+		if prof.ProjectDefault {
+			rowStr += " " + p.styles.ProjectBadge.Render("[PROJECT DEFAULT]")
+		}
 
 		// Apply row style
 		style := p.styles.Row
