@@ -14,6 +14,7 @@ import (
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/refresh"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/rotation"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/stealth"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +33,15 @@ Examples:
   caam activate codex
   caam activate claude personal-max
   caam activate gemini team-ultra
+  caam activate claude --auto
+
+The --auto flag enables smart profile rotation, which selects the best profile
+based on health status, cooldown state, and usage patterns. Three algorithms
+are available (configured in config.yaml):
+
+  smart       - Multi-factor scoring (health, cooldown, recency)
+  round_robin - Sequential rotation through profiles
+  random      - Random selection
 
 After activating, just run the tool normally - it will use the new account.`,
 	Args: cobra.RangeArgs(1, 2),
@@ -41,13 +51,23 @@ After activating, just run the tool normally - it will use the new account.`,
 func init() {
 	activateCmd.Flags().Bool("backup-current", false, "backup current auth before switching")
 	activateCmd.Flags().Bool("force", false, "activate even if the profile is in cooldown")
+	activateCmd.Flags().Bool("auto", false, "auto-select profile using rotation algorithm")
 }
 
 func runActivate(cmd *cobra.Command, args []string) error {
 	tool := strings.ToLower(args[0])
+	autoSelect, _ := cmd.Flags().GetBool("auto")
+
 	var profileName string
-	if len(args) == 2 {
+	if len(args) == 2 && !autoSelect {
 		profileName = args[1]
+	} else if autoSelect {
+		// Use rotation algorithm to select profile
+		selected, err := selectProfileWithRotation(tool)
+		if err != nil {
+			return err
+		}
+		profileName = selected
 	} else {
 		var source string
 		var err error
@@ -286,4 +306,65 @@ func refreshIfNeeded(ctx context.Context, provider, profile string) error {
 
 	fmt.Println("done")
 	return nil
+}
+
+// selectProfileWithRotation uses the rotation algorithm to select a profile.
+func selectProfileWithRotation(tool string) (string, error) {
+	// Load SPM config to get rotation settings
+	spmCfg, err := config.LoadSPMConfig()
+	if err != nil {
+		spmCfg = config.DefaultSPMConfig()
+	}
+
+	// Check if rotation is enabled
+	if !spmCfg.Stealth.Rotation.Enabled {
+		return "", fmt.Errorf("rotation is not enabled; enable it in config.yaml under stealth.rotation.enabled")
+	}
+
+	// Get list of profiles for this tool
+	profiles, err := vault.List(tool)
+	if err != nil {
+		return "", fmt.Errorf("list profiles: %w", err)
+	}
+
+	if len(profiles) == 0 {
+		return "", fmt.Errorf("no profiles found for %s; create one with 'caam backup %s <name>'", tool, tool)
+	}
+
+	// Get algorithm from config
+	algorithm := rotation.Algorithm(spmCfg.Stealth.Rotation.Algorithm)
+	if algorithm == "" {
+		algorithm = rotation.AlgorithmSmart
+	}
+
+	// Open database for cooldown checks
+	var db *caamdb.DB
+	if spmCfg.Stealth.Cooldown.Enabled {
+		db, err = caamdb.Open()
+		if err != nil {
+			fmt.Printf("Warning: could not open database for rotation: %v\n", err)
+		} else {
+			defer db.Close()
+		}
+	}
+
+	// Get current active profile
+	getFileSet, ok := tools[tool]
+	if !ok {
+		return "", fmt.Errorf("unknown tool: %s", tool)
+	}
+	currentProfile, _ := vault.ActiveProfile(getFileSet())
+
+	// Create selector and select profile
+	selector := rotation.NewSelector(algorithm, healthStore, db)
+	result, err := selector.Select(tool, profiles, currentProfile)
+	if err != nil {
+		return "", fmt.Errorf("rotation select: %w", err)
+	}
+
+	// Display the selection result
+	fmt.Print(rotation.FormatResult(result))
+	fmt.Println()
+
+	return result.Selected, nil
 }
