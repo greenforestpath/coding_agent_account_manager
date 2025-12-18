@@ -70,6 +70,7 @@ func TestSubcommandRegistration(t *testing.T) {
 		"refresh",
 		"export",
 		"import",
+		"resume",
 		"status",
 		"ls",
 		"delete",

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider"
@@ -79,10 +80,26 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 		cmd.Dir = opts.WorkDir
 	}
 
+	var capture *codexSessionCapture
+	var stdoutObserver, stderrObserver *lineObserverWriter
+	if opts.Provider.ID() == "codex" {
+		capture = &codexSessionCapture{}
+		stdoutObserver = newLineObserverWriter(os.Stdout, capture.ObserveLine)
+		stderrObserver = newLineObserverWriter(os.Stderr, capture.ObserveLine)
+	}
+
 	// Connect stdio
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	if stdoutObserver != nil {
+		cmd.Stdout = stdoutObserver
+	} else {
+		cmd.Stdout = os.Stdout
+	}
+	if stderrObserver != nil {
+		cmd.Stderr = stderrObserver
+	} else {
+		cmd.Stderr = os.Stderr
+	}
 
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
@@ -97,16 +114,43 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 	defer signal.Stop(sigChan)
 
 	// Run command
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			// Return the actual exit code
-			os.Exit(exitErr.ExitCode())
-		}
-		return fmt.Errorf("run command: %w", err)
+	runErr := cmd.Run()
+	if stdoutObserver != nil {
+		stdoutObserver.Flush()
+	}
+	if stderrObserver != nil {
+		stderrObserver.Flush()
 	}
 
-	// Update last used timestamp
-	opts.Profile.UpdateLastUsed()
+	now := time.Now()
+	opts.Profile.LastUsedAt = now
+	if capture != nil {
+		if sessionID := capture.ID(); sessionID != "" {
+			opts.Profile.LastSessionID = sessionID
+			opts.Profile.LastSessionTS = now.UTC()
+		}
+	}
+	if err := opts.Profile.Save(); err != nil {
+		// Don't hide the original process exit code, but do surface metadata issues
+		// when the command otherwise succeeded.
+		if runErr == nil {
+			return fmt.Errorf("save profile metadata: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: failed to save profile metadata: %v\n", err)
+	}
+
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			// Propagate the actual exit code, but first ensure we release the lock.
+			if !opts.NoLock {
+				if err := opts.Profile.Unlock(); err != nil && !os.IsNotExist(err) {
+					fmt.Fprintf(os.Stderr, "warning: failed to unlock profile: %v\n", err)
+				}
+			}
+			os.Exit(exitErr.ExitCode())
+		}
+		return fmt.Errorf("run command: %w", runErr)
+	}
 
 	return nil
 }

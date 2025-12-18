@@ -41,6 +41,13 @@ type Profile struct {
 	// LastUsedAt is when this profile was last used.
 	LastUsedAt time.Time `json:"last_used_at,omitempty"`
 
+	// LastSessionID is the most recent Codex session ID observed for this profile.
+	// This enables 'caam resume codex <profile>' to resume without manually copy/pasting.
+	LastSessionID string `json:"last_session_id,omitempty"`
+
+	// LastSessionTS is when LastSessionID was last observed.
+	LastSessionTS time.Time `json:"last_session_ts,omitempty"`
+
 	// Metadata stores provider-specific configuration.
 	Metadata map[string]string `json:"metadata,omitempty"`
 
