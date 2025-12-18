@@ -14,6 +14,7 @@ import (
 // ProfileInfo represents a profile with all displayable information.
 type ProfileInfo struct {
 	Name         string
+	Badge        string
 	AuthMode     string
 	LoggedIn     bool
 	Locked       bool
@@ -38,16 +39,16 @@ type ProfilesPanel struct {
 
 // ProfilesPanelStyles holds the styles for the profiles panel.
 type ProfilesPanelStyles struct {
-	Border         lipgloss.Style
-	Title          lipgloss.Style
-	Header         lipgloss.Style
-	Row            lipgloss.Style
-	SelectedRow    lipgloss.Style
+	Border          lipgloss.Style
+	Title           lipgloss.Style
+	Header          lipgloss.Style
+	Row             lipgloss.Style
+	SelectedRow     lipgloss.Style
 	ActiveIndicator lipgloss.Style
-	StatusOK       lipgloss.Style
-	StatusBad      lipgloss.Style
-	LockIcon       lipgloss.Style
-	Empty          lipgloss.Style
+	StatusOK        lipgloss.Style
+	StatusBad       lipgloss.Style
+	LockIcon        lipgloss.Style
+	Empty           lipgloss.Style
 }
 
 // DefaultProfilesPanelStyles returns the default styles for the profiles panel.
@@ -283,18 +284,18 @@ func (p *ProfilesPanel) View() string {
 		}
 
 		// Build row cells with proper padding
-		paddedName := padRight(truncate(prof.Name, colWidths.name-2), colWidths.name-2)
+		paddedName := padRight(formatNameWithBadge(prof.Name, prof.Badge, colWidths.name-2), colWidths.name-2)
 		paddedAuth := padRight(prof.AuthMode, colWidths.auth)
-		
+
 		// Status padding
 		// statusText has the emoji and text.
 		paddedStatusText := padRight(statusText, colWidths.status)
 		renderedStatus := statusStyle.Render(paddedStatusText)
-		
+
 		paddedLastUsed := padRight(lastUsed, colWidths.lastUsed)
 		paddedAccount := padRight(account, colWidths.account)
-		
-		rowStr := fmt.Sprintf("%s %s %s %s %s", 
+
+		rowStr := fmt.Sprintf("%s %s %s %s %s",
 			indicator+paddedName,
 			paddedAuth,
 			renderedStatus,
@@ -376,4 +377,25 @@ func truncate(s string, width int) string {
 		return string(runes[:width])
 	}
 	return string(runes[:width-3]) + "..."
+}
+
+func formatNameWithBadge(name, badge string, width int) string {
+	if badge == "" {
+		return truncate(name, width)
+	}
+	if width <= 0 {
+		return ""
+	}
+
+	badgeRunes := utf8.RuneCountInString(badge)
+	if badgeRunes >= width {
+		return truncate(badge, width)
+	}
+
+	nameWidth := width - 1 - badgeRunes
+	if nameWidth < 0 {
+		nameWidth = 0
+	}
+
+	return truncate(name, nameWidth) + " " + badge
 }

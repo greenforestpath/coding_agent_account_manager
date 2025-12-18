@@ -3,9 +3,13 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -54,14 +58,19 @@ type Model struct {
 	err    error
 
 	// UI components
-	keys           keyMap
-	styles         Styles
-	providerPanel  *ProviderPanel
-	profilesPanel  *ProfilesPanel
-	detailPanel    *DetailPanel
+	keys          keyMap
+	styles        Styles
+	providerPanel *ProviderPanel
+	profilesPanel *ProfilesPanel
+	detailPanel   *DetailPanel
 
 	// Status message
 	statusMsg string
+
+	// Hot reload watcher
+	vaultPath string
+	watcher   *watcher.Watcher
+	badges    map[string]profileBadge
 
 	// Confirmation state
 	pendingAction confirmAction
@@ -95,6 +104,8 @@ func NewWithProviders(providers []string) Model {
 		providerPanel:  NewProviderPanel(providers),
 		profilesPanel:  profilesPanel,
 		detailPanel:    NewDetailPanel(),
+		vaultPath:      authfile.DefaultVaultPath(),
+		badges:         make(map[string]profileBadge),
 	}
 }
 
@@ -103,20 +114,83 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
 		m.loadProfiles,
+		m.initWatcher(),
 	)
+}
+
+func (m Model) initWatcher() tea.Cmd {
+	return func() tea.Msg {
+		w, err := watcher.New(m.vaultPath)
+		return watcherReadyMsg{watcher: w, err: err}
+	}
+}
+
+func (m Model) watchProfiles() tea.Cmd {
+	if m.watcher == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		select {
+		case evt, ok := <-m.watcher.Events():
+			if !ok {
+				return nil
+			}
+			return profilesChangedMsg{event: evt}
+		case err, ok := <-m.watcher.Errors():
+			if !ok {
+				return nil
+			}
+			return errMsg{err: err}
+		}
+	}
 }
 
 // loadProfiles loads profiles for all providers.
 func (m Model) loadProfiles() tea.Msg {
+	vault := authfile.NewVault(m.vaultPath)
 	profiles := make(map[string][]Profile)
 
 	for _, name := range m.providers {
-		// TODO: Load actual profiles from vault
-		// For now, return empty list
-		profiles[name] = []Profile{}
+		names, err := vault.List(name)
+		if err != nil {
+			return errMsg{err: fmt.Errorf("list vault profiles for %s: %w", name, err)}
+		}
+
+		active := ""
+		if len(names) > 0 {
+			if fileSet, ok := authFileSetForProvider(name); ok {
+				if ap, err := vault.ActiveProfile(fileSet); err == nil {
+					active = ap
+				}
+			}
+		}
+
+		sort.Strings(names)
+		ps := make([]Profile, 0, len(names))
+		for _, prof := range names {
+			ps = append(ps, Profile{
+				Name:     prof,
+				Provider: name,
+				IsActive: prof == active,
+			})
+		}
+		profiles[name] = ps
 	}
 
 	return profilesLoadedMsg{profiles: profiles}
+}
+
+func authFileSetForProvider(provider string) (authfile.AuthFileSet, bool) {
+	switch provider {
+	case "codex":
+		return authfile.CodexAuthFiles(), true
+	case "claude":
+		return authfile.ClaudeAuthFiles(), true
+	case "gemini":
+		return authfile.GeminiAuthFiles(), true
+	default:
+		return authfile.AuthFileSet{}, false
+	}
 }
 
 // profilesLoadedMsg is sent when profiles are loaded.
@@ -132,6 +206,47 @@ type errMsg struct {
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case watcherReadyMsg:
+		if msg.err != nil {
+			// Graceful degradation: keep the TUI usable without hot reload.
+			m.statusMsg = "Hot reload unavailable (file watching disabled)"
+			return m, nil
+		}
+		m.watcher = msg.watcher
+		return m, m.watchProfiles()
+
+	case profilesChangedMsg:
+		if msg.event.Type == watcher.EventProfileDeleted {
+			delete(m.badges, badgeKey(msg.event.Provider, msg.event.Profile))
+		}
+
+		var badgeCmd tea.Cmd
+		if msg.event.Type == watcher.EventProfileAdded {
+			if m.badges == nil {
+				m.badges = make(map[string]profileBadge)
+			}
+			key := badgeKey(msg.event.Provider, msg.event.Profile)
+			m.badges[key] = profileBadge{
+				badge:  "NEW",
+				expiry: time.Now().Add(5 * time.Second),
+			}
+			badgeCmd = tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+				return badgeExpiredMsg{key: key}
+			})
+		}
+
+		m.statusMsg = fmt.Sprintf("Profile %s/%s %s", msg.event.Provider, msg.event.Profile, eventTypeVerb(msg.event.Type))
+		cmds := []tea.Cmd{m.loadProfiles, m.watchProfiles()}
+		if badgeCmd != nil {
+			cmds = append(cmds, badgeCmd)
+		}
+		return m, tea.Batch(cmds...)
+
+	case badgeExpiredMsg:
+		delete(m.badges, msg.key)
+		m.syncProfilesPanel()
+		return m, nil
+
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
 
@@ -156,6 +271,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.err = msg.err
+		m.statusMsg = msg.err.Error()
+		if m.watcher != nil {
+			return m, m.watchProfiles()
+		}
 		return m, nil
 	}
 
@@ -179,6 +298,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Normal list view key handling
 	switch {
 	case key.Matches(msg, m.keys.Quit):
+		if m.watcher != nil {
+			_ = m.watcher.Close()
+			m.watcher = nil
+		}
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keys.Help):
@@ -321,6 +444,7 @@ func (m *Model) applySearchFilter() {
 		if query == "" || strings.Contains(strings.ToLower(p.Name), query) {
 			filtered = append(filtered, ProfileInfo{
 				Name:     p.Name,
+				Badge:    m.badgeFor(provider, p.Name),
 				AuthMode: "oauth",
 				LoggedIn: true,
 				Locked:   false,
@@ -464,13 +588,14 @@ func (m Model) syncProfilesPanel() {
 	for i, p := range profiles {
 		infos[i] = ProfileInfo{
 			Name:         p.Name,
-			AuthMode:     "oauth",               // Default, TODO: get from actual profile
-			LoggedIn:     true,                  // TODO: get actual status
-			Locked:       false,                 // TODO: get actual lock status
+			Badge:        m.badgeFor(provider, p.Name),
+			AuthMode:     "oauth", // Default, TODO: get from actual profile
+			LoggedIn:     true,    // TODO: get actual status
+			Locked:       false,   // TODO: get actual lock status
 			IsActive:     p.IsActive,
 			HealthStatus: health.StatusUnknown, // TODO: get from health store
-			ErrorCount:   0,                     // TODO: get from health store
-			Penalty:      0,                     // TODO: get from health store
+			ErrorCount:   0,                    // TODO: get from health store
+			Penalty:      0,                    // TODO: get from health store
 		}
 	}
 	m.profilesPanel.SetProfiles(infos)
@@ -494,14 +619,14 @@ func (m Model) syncDetailPanel() {
 	detail := &DetailInfo{
 		Name:         prof.Name,
 		Provider:     m.currentProvider(),
-		AuthMode:     "oauth",               // TODO: get from actual profile
-		LoggedIn:     true,                  // TODO: get actual status
-		Locked:       false,                 // TODO: get actual lock status
-		Path:         "",                    // TODO: get from actual profile
-		Account:      "",                    // TODO: get from actual profile
+		AuthMode:     "oauth",              // TODO: get from actual profile
+		LoggedIn:     true,                 // TODO: get actual status
+		Locked:       false,                // TODO: get actual lock status
+		Path:         "",                   // TODO: get from actual profile
+		Account:      "",                   // TODO: get from actual profile
 		HealthStatus: health.StatusUnknown, // TODO: get from health store
-		ErrorCount:   0,                     // TODO: get from health store
-		Penalty:      0,                     // TODO: get from health store
+		ErrorCount:   0,                    // TODO: get from health store
+		Penalty:      0,                    // TODO: get from health store
 	}
 	m.detailPanel.SetProfile(detail)
 }
@@ -680,6 +805,33 @@ Press any key to return...
 // Run starts the TUI application.
 func Run() error {
 	p := tea.NewProgram(New(), tea.WithAltScreen())
-	_, err := p.Run()
+	finalModel, err := p.Run()
+	if m, ok := finalModel.(Model); ok && m.watcher != nil {
+		_ = m.watcher.Close()
+	}
 	return err
+}
+
+type profileBadge struct {
+	badge  string
+	expiry time.Time
+}
+
+func badgeKey(provider, profile string) string {
+	return provider + "/" + profile
+}
+
+func (m Model) badgeFor(provider, profile string) string {
+	if m.badges == nil {
+		return ""
+	}
+	key := badgeKey(provider, profile)
+	b, ok := m.badges[key]
+	if !ok {
+		return ""
+	}
+	if !b.expiry.IsZero() && time.Now().After(b.expiry) {
+		return ""
+	}
+	return b.badge
 }
