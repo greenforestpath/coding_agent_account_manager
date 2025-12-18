@@ -21,6 +21,31 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestReadAPIKeyFromStdin_NonTTY(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "key.txt")
+	if err := os.WriteFile(keyPath, []byte("sk-test-123\n"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	f, err := os.Open(keyPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close()
+
+	key, hidden, err := readAPIKeyFromStdin(f)
+	if err != nil {
+		t.Fatalf("readAPIKeyFromStdin: %v", err)
+	}
+	if hidden {
+		t.Fatal("expected non-tty read to not be hidden")
+	}
+	if key != "sk-test-123" {
+		t.Fatalf("key=%q, want %q", key, "sk-test-123")
+	}
+}
+
 // =============================================================================
 // Provider Identity Tests
 // =============================================================================

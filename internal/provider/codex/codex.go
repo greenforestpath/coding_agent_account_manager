@@ -29,6 +29,7 @@ import (
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/passthrough"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider"
+	"golang.org/x/term"
 )
 
 // Provider implements the Codex CLI adapter.
@@ -176,6 +177,27 @@ func (p *Provider) loginWithOAuth(ctx context.Context, prof *profile.Profile) er
 	return cmd.Run()
 }
 
+func readAPIKeyFromStdin(stdin *os.File) (key string, hidden bool, err error) {
+	if stdin == nil {
+		return "", false, fmt.Errorf("stdin is nil")
+	}
+
+	if term.IsTerminal(int(stdin.Fd())) {
+		b, err := term.ReadPassword(int(stdin.Fd()))
+		if err != nil {
+			return "", false, fmt.Errorf("read API key: %w", err)
+		}
+		return strings.TrimSpace(string(b)), true, nil
+	}
+
+	reader := bufio.NewReader(stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", false, fmt.Errorf("read API key: %w", err)
+	}
+	return strings.TrimSpace(line), false, nil
+}
+
 // loginWithAPIKey prompts for and stores an API key.
 func (p *Provider) loginWithAPIKey(ctx context.Context, prof *profile.Profile) error {
 	codexHomePath := prof.CodexHomePath()
@@ -183,13 +205,15 @@ func (p *Provider) loginWithAPIKey(ctx context.Context, prof *profile.Profile) e
 	// Check for OPENAI_API_KEY environment variable first
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		fmt.Print("Enter OpenAI API key (input hidden): ")
-		reader := bufio.NewReader(os.Stdin)
-		key, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return fmt.Errorf("read API key: %w", err)
+		fmt.Print("Enter OpenAI API key: ")
+		key, hidden, err := readAPIKeyFromStdin(os.Stdin)
+		if hidden {
+			fmt.Println()
 		}
-		apiKey = strings.TrimSpace(key)
+		if err != nil {
+			return err
+		}
+		apiKey = key
 	}
 
 	if apiKey == "" {
