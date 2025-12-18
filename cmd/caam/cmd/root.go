@@ -377,12 +377,17 @@ Examples:
 					marker = "● "
 				}
 
+				tag := ""
+				if authfile.IsSystemProfile(p) {
+					tag = "[system]"
+				}
+
 				// Get health info
 				ph := getProfileHealth(tool, p)
 				status := health.CalculateStatus(ph)
 				healthStr := health.FormatHealthStatus(status, ph, formatOpts)
 
-				fmt.Printf("%s%-20s  %s\n", marker, p, healthStr)
+				fmt.Printf("%s%-20s  %-8s  %s\n", marker, p, tag, healthStr)
 			}
 			return nil
 		}
@@ -412,12 +417,17 @@ Examples:
 					marker = "● "
 				}
 
+				tag := ""
+				if authfile.IsSystemProfile(p) {
+					tag = "[system]"
+				}
+
 				// Get health info
 				ph := getProfileHealth(tool, p)
 				status := health.CalculateStatus(ph)
 				healthStr := health.FormatHealthStatus(status, ph, formatOpts)
 
-				fmt.Printf("  %s%-20s  %s\n", marker, p, healthStr)
+				fmt.Printf("  %s%-20s  %-8s  %s\n", marker, p, tag, healthStr)
 			}
 		}
 
@@ -448,6 +458,9 @@ Examples:
 		}
 
 		force, _ := cmd.Flags().GetBool("force")
+		if authfile.IsSystemProfile(profileName) && !force {
+			return fmt.Errorf("refusing to delete system profile %s/%s without --force", tool, profileName)
+		}
 		if !force {
 			fmt.Printf("Delete profile %s/%s? [y/N]: ", tool, profileName)
 			var confirm string
@@ -458,7 +471,13 @@ Examples:
 			}
 		}
 
-		if err := vault.Delete(tool, profileName); err != nil {
+		var err error
+		if authfile.IsSystemProfile(profileName) {
+			err = vault.DeleteForce(tool, profileName)
+		} else {
+			err = vault.Delete(tool, profileName)
+		}
+		if err != nil {
 			return fmt.Errorf("delete failed: %w", err)
 		}
 
@@ -468,7 +487,7 @@ Examples:
 }
 
 func init() {
-	deleteCmd.Flags().Bool("force", false, "skip confirmation")
+	deleteCmd.Flags().Bool("force", false, "skip confirmation (required to delete system profiles starting with '_')")
 }
 
 // pathsCmd shows auth file paths for each tool.

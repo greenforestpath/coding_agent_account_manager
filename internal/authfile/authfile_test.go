@@ -446,6 +446,32 @@ func TestVaultDelete(t *testing.T) {
 		}
 	})
 
+	t.Run("refuses to delete system profiles without force", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		profileDir := filepath.Join(tmpDir, "testtool", "_system")
+		if err := os.MkdirAll(profileDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		v := NewVault(tmpDir)
+		if err := v.Delete("testtool", "_system"); err == nil {
+			t.Fatal("Delete() should fail for system profiles")
+		}
+
+		// Verify still exists.
+		if _, err := os.Stat(profileDir); err != nil {
+			t.Fatalf("profile directory should still exist: %v", err)
+		}
+
+		if err := v.DeleteForce("testtool", "_system"); err != nil {
+			t.Fatalf("DeleteForce() error = %v", err)
+		}
+		if _, err := os.Stat(profileDir); !os.IsNotExist(err) {
+			t.Error("profile directory should be deleted")
+		}
+	})
+
 	t.Run("deleting nonexistent profile is noop", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		v := NewVault(tmpDir)

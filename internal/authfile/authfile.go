@@ -13,6 +13,7 @@ package authfile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -133,6 +134,16 @@ type Vault struct {
 	basePath string // ~/.local/share/accx/vault
 }
 
+// IsSystemProfile reports whether a profile name is reserved for system-managed
+// profiles (created automatically by caam safety features).
+//
+// Convention: profile names starting with '_' are system profiles.
+func IsSystemProfile(name string) bool {
+	return strings.HasPrefix(strings.TrimSpace(name), "_")
+}
+
+var errProtectedSystemProfile = fmt.Errorf("protected system profile")
+
 // NewVault creates a new vault at the given path.
 func NewVault(basePath string) *Vault {
 	return &Vault{basePath: basePath}
@@ -206,9 +217,30 @@ func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
 
 	// Write metadata
 	metaPath := filepath.Join(profileDir, "meta.json")
-	meta := fmt.Sprintf(`{"tool": %q, "profile": %q, "backed_up_at": %q, "files": %d}`,
-		fileSet.Tool, profile, time.Now().Format(time.RFC3339), backedUp)
-	if err := os.WriteFile(metaPath, []byte(meta), 0600); err != nil {
+	meta := struct {
+		Tool       string `json:"tool"`
+		Profile    string `json:"profile"`
+		BackedUpAt string `json:"backed_up_at"`
+		Files      int    `json:"files"`
+		Type       string `json:"type,omitempty"`       // user|system
+		CreatedBy  string `json:"created_by,omitempty"` // user|auto
+	}{
+		Tool:       fileSet.Tool,
+		Profile:    profile,
+		BackedUpAt: time.Now().Format(time.RFC3339),
+		Files:      backedUp,
+		Type:       "user",
+		CreatedBy:  "user",
+	}
+	if IsSystemProfile(profile) {
+		meta.Type = "system"
+		meta.CreatedBy = "auto"
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("marshal metadata: %w", err)
+	}
+	if err := os.WriteFile(metaPath, raw, 0600); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 
@@ -308,6 +340,16 @@ func (v *Vault) ListAll() (map[string][]string, error) {
 
 // Delete removes a profile from the vault.
 func (v *Vault) Delete(tool, profile string) error {
+	if IsSystemProfile(profile) {
+		return fmt.Errorf("%w: refusing to delete %s/%s without force", errProtectedSystemProfile, tool, profile)
+	}
+	return v.DeleteForce(tool, profile)
+}
+
+// DeleteForce removes a profile from the vault, including system profiles.
+// Prefer Delete unless the caller has an explicit reason to remove protected
+// profiles.
+func (v *Vault) DeleteForce(tool, profile string) error {
 	profileDir, err := v.safeProfileDir(tool, profile)
 	if err != nil {
 		return err
