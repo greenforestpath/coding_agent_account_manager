@@ -135,7 +135,6 @@ func NewWithProviders(providers []string) Model {
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
-		tea.EnterAltScreen,
 		m.loadProfiles,
 		m.loadProjectContext(),
 		m.initSignals(),

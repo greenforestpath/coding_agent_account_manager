@@ -3,6 +3,7 @@
 package signals
 
 import (
+	"errors"
 	"os"
 	"syscall"
 )
@@ -15,5 +16,11 @@ func isProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return process.Signal(syscall.Signal(0)) == nil
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		return true
+	} else if errors.Is(err, syscall.EPERM) {
+		// Process exists but we don't have permission to signal it.
+		return true
+	}
+	return false
 }
