@@ -124,6 +124,32 @@ func TestVaultBackup(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid profile name fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vaultDir := filepath.Join(tmpDir, "vault")
+		authDir := filepath.Join(tmpDir, "auth")
+
+		if err := os.MkdirAll(authDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		authFile := filepath.Join(authDir, "auth.json")
+		if err := os.WriteFile(authFile, []byte(`{"token": "secret123"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		v := NewVault(vaultDir)
+		fileSet := AuthFileSet{
+			Tool: "testtool",
+			Files: []AuthFileSpec{
+				{Tool: "testtool", Path: authFile, Required: true},
+			},
+		}
+
+		if err := v.Backup(fileSet, "/"); err == nil {
+			t.Fatal("Backup() should fail for invalid profile name")
+		}
+	})
+
 	t.Run("optional file missing succeeds", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		vaultDir := filepath.Join(tmpDir, "vault")
@@ -427,6 +453,18 @@ func TestVaultDelete(t *testing.T) {
 		// Should not error
 		if err := v.Delete("testtool", "nonexistent"); err != nil {
 			t.Fatalf("Delete() error = %v", err)
+		}
+	})
+
+	t.Run("rejects invalid segments", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		if err := v.Delete("/", "profile"); err == nil {
+			t.Fatal("Delete() should fail for invalid tool segment")
+		}
+		if err := v.Delete("testtool", "/"); err == nil {
+			t.Fatal("Delete() should fail for invalid profile segment")
 		}
 	})
 }

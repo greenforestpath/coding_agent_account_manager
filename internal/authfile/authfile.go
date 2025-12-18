@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -170,7 +171,10 @@ func (v *Vault) BackupPath(tool, profile, filename string) string {
 
 // Backup saves the current auth files to the vault.
 func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
-	profileDir := v.ProfilePath(fileSet.Tool, profile)
+	profileDir, err := v.safeProfileDir(fileSet.Tool, profile)
+	if err != nil {
+		return err
+	}
 
 	// Create profile directory
 	if err := os.MkdirAll(profileDir, 0700); err != nil {
@@ -188,7 +192,7 @@ func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
 
 		// Copy file to vault
 		filename := filepath.Base(spec.Path)
-		destPath := v.BackupPath(fileSet.Tool, profile, filename)
+		destPath := filepath.Join(profileDir, filename)
 
 		if err := copyFile(spec.Path, destPath); err != nil {
 			return fmt.Errorf("backup %s: %w", spec.Path, err)
@@ -213,7 +217,10 @@ func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
 
 // Restore copies backed-up auth files to their original locations.
 func (v *Vault) Restore(fileSet AuthFileSet, profile string) error {
-	profileDir := v.ProfilePath(fileSet.Tool, profile)
+	profileDir, err := v.safeProfileDir(fileSet.Tool, profile)
+	if err != nil {
+		return err
+	}
 
 	if _, err := os.Stat(profileDir); os.IsNotExist(err) {
 		return fmt.Errorf("profile %s/%s not found in vault", fileSet.Tool, profile)
@@ -222,7 +229,7 @@ func (v *Vault) Restore(fileSet AuthFileSet, profile string) error {
 	restored := 0
 	for _, spec := range fileSet.Files {
 		filename := filepath.Base(spec.Path)
-		srcPath := v.BackupPath(fileSet.Tool, profile, filename)
+		srcPath := filepath.Join(profileDir, filename)
 
 		// Check if backup exists
 		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
@@ -253,7 +260,10 @@ func (v *Vault) Restore(fileSet AuthFileSet, profile string) error {
 
 // List returns all profiles stored for a tool.
 func (v *Vault) List(tool string) ([]string, error) {
-	toolDir := filepath.Join(v.basePath, tool)
+	toolDir, err := v.safeToolDir(tool)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(toolDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -298,7 +308,10 @@ func (v *Vault) ListAll() (map[string][]string, error) {
 
 // Delete removes a profile from the vault.
 func (v *Vault) Delete(tool, profile string) error {
-	profileDir := v.ProfilePath(tool, profile)
+	profileDir, err := v.safeProfileDir(tool, profile)
+	if err != nil {
+		return err
+	}
 	return os.RemoveAll(profileDir)
 }
 
@@ -424,4 +437,74 @@ func hashFile(path string) (string, error) {
 	}
 
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (v *Vault) safeToolDir(tool string) (string, error) {
+	if v == nil || strings.TrimSpace(v.basePath) == "" {
+		return "", fmt.Errorf("vault base path is empty")
+	}
+	tool, err := validateVaultSegment("tool", tool)
+	if err != nil {
+		return "", err
+	}
+
+	baseAbs, err := filepath.Abs(v.basePath)
+	if err != nil {
+		return "", fmt.Errorf("vault base absolute path: %w", err)
+	}
+
+	return filepath.Join(baseAbs, tool), nil
+}
+
+func (v *Vault) safeProfileDir(tool, profile string) (string, error) {
+	if v == nil || strings.TrimSpace(v.basePath) == "" {
+		return "", fmt.Errorf("vault base path is empty")
+	}
+	tool, err := validateVaultSegment("tool", tool)
+	if err != nil {
+		return "", err
+	}
+	profile, err = validateVaultSegment("profile", profile)
+	if err != nil {
+		return "", err
+	}
+
+	baseAbs, err := filepath.Abs(v.basePath)
+	if err != nil {
+		return "", fmt.Errorf("vault base absolute path: %w", err)
+	}
+
+	full := filepath.Join(baseAbs, tool, profile)
+	fullAbs, err := filepath.Abs(full)
+	if err != nil {
+		return "", fmt.Errorf("vault profile absolute path: %w", err)
+	}
+
+	baseAbs = filepath.Clean(baseAbs)
+	if fullAbs != baseAbs && !strings.HasPrefix(fullAbs, baseAbs+string(os.PathSeparator)) {
+		return "", fmt.Errorf("vault profile path escapes base directory")
+	}
+
+	return fullAbs, nil
+}
+
+func validateVaultSegment(kind, val string) (string, error) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return "", fmt.Errorf("%s cannot be empty", kind)
+	}
+	if val == "." || val == ".." {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	if strings.ContainsRune(val, 0) {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	if strings.ContainsAny(val, "/\\") {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	if filepath.IsAbs(val) || filepath.VolumeName(val) != "" {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+
+	return val, nil
 }

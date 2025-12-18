@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -331,8 +332,42 @@ func (s *Store) ProfilePath(provider, name string) string {
 	return filepath.Join(s.basePath, provider, name)
 }
 
+func validateStoreSegment(kind, val string) (string, error) {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return "", fmt.Errorf("%s cannot be empty", kind)
+	}
+	if val == "." || val == ".." {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	if strings.ContainsRune(val, 0) {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	if strings.ContainsAny(val, "/\\") {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	if filepath.IsAbs(val) || filepath.VolumeName(val) != "" {
+		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	}
+	return val, nil
+}
+
 // Create creates a new profile.
 func (s *Store) Create(provider, name, authMode string) (*Profile, error) {
+	if s == nil || strings.TrimSpace(s.basePath) == "" {
+		return nil, fmt.Errorf("profile store base path is empty")
+	}
+	var err error
+	provider, err = validateStoreSegment("provider", provider)
+	if err != nil {
+		return nil, err
+	}
+	name, err = validateStoreSegment("name", name)
+	if err != nil {
+		return nil, err
+	}
+	authMode = strings.TrimSpace(authMode)
+
 	profilePath := s.ProfilePath(provider, name)
 
 	// Check if already exists
@@ -358,6 +393,19 @@ func (s *Store) Create(provider, name, authMode string) (*Profile, error) {
 
 // Load retrieves a profile from disk.
 func (s *Store) Load(provider, name string) (*Profile, error) {
+	if s == nil || strings.TrimSpace(s.basePath) == "" {
+		return nil, fmt.Errorf("profile store base path is empty")
+	}
+	var err error
+	provider, err = validateStoreSegment("provider", provider)
+	if err != nil {
+		return nil, err
+	}
+	name, err = validateStoreSegment("name", name)
+	if err != nil {
+		return nil, err
+	}
+
 	profilePath := s.ProfilePath(provider, name)
 	metaPath := filepath.Join(profilePath, "profile.json")
 
@@ -384,6 +432,19 @@ func (s *Store) Load(provider, name string) (*Profile, error) {
 
 // Delete removes a profile and all its data.
 func (s *Store) Delete(provider, name string) error {
+	if s == nil || strings.TrimSpace(s.basePath) == "" {
+		return fmt.Errorf("profile store base path is empty")
+	}
+	var err error
+	provider, err = validateStoreSegment("provider", provider)
+	if err != nil {
+		return err
+	}
+	name, err = validateStoreSegment("name", name)
+	if err != nil {
+		return err
+	}
+
 	profilePath := s.ProfilePath(provider, name)
 
 	// Check if profile exists
@@ -402,6 +463,15 @@ func (s *Store) Delete(provider, name string) error {
 
 // List returns all profiles for a provider.
 func (s *Store) List(provider string) ([]*Profile, error) {
+	if s == nil || strings.TrimSpace(s.basePath) == "" {
+		return nil, fmt.Errorf("profile store base path is empty")
+	}
+	var err error
+	provider, err = validateStoreSegment("provider", provider)
+	if err != nil {
+		return nil, err
+	}
+
 	providerPath := filepath.Join(s.basePath, provider)
 
 	entries, err := os.ReadDir(providerPath)
@@ -459,7 +529,20 @@ func (s *Store) ListAll() (map[string][]*Profile, error) {
 
 // Exists checks if a profile exists.
 func (s *Store) Exists(provider, name string) bool {
+	if s == nil || strings.TrimSpace(s.basePath) == "" {
+		return false
+	}
+	var err error
+	provider, err = validateStoreSegment("provider", provider)
+	if err != nil {
+		return false
+	}
+	name, err = validateStoreSegment("name", name)
+	if err != nil {
+		return false
+	}
+
 	profilePath := s.ProfilePath(provider, name)
-	_, err := os.Stat(profilePath)
+	_, err = os.Stat(profilePath)
 	return err == nil
 }

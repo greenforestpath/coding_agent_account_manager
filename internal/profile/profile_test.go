@@ -481,6 +481,38 @@ func TestStoreCreate(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsUnsafeSegments(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(tmpDir)
+
+	cases := []struct {
+		provider string
+		name     string
+	}{
+		{provider: "/", name: "work"},
+		{provider: "codex", name: "/"},
+		{provider: "codex", name: ".."},
+		{provider: "codex", name: "a/b"},
+		{provider: "codex", name: "a\\b"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.provider+"/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := store.Create(tc.provider, tc.name, "oauth"); err == nil {
+				t.Fatal("expected Create() to fail for unsafe provider/name")
+			}
+			if err := store.Delete(tc.provider, tc.name); err == nil {
+				t.Fatal("expected Delete() to fail for unsafe provider/name")
+			}
+			if store.Exists(tc.provider, tc.name) {
+				t.Fatal("expected Exists() to be false for unsafe provider/name")
+			}
+		})
+	}
+}
+
 func TestStoreLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := NewStore(tmpDir)
