@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bytes"
 	"io"
 	"regexp"
 	"sync"
@@ -51,7 +52,7 @@ func (w *lineObserverWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p[:n]...)
 
 	for {
-		nl := indexByte(w.buf, '\n')
+		nl := bytes.IndexByte(w.buf, '\n')
 		if nl < 0 {
 			break
 		}
@@ -83,13 +84,4 @@ func (w *lineObserverWriter) Flush() {
 	}
 	w.onLine(string(lineBytes))
 	w.buf = nil
-}
-
-func indexByte(buf []byte, needle byte) int {
-	for i, b := range buf {
-		if b == needle {
-			return i
-		}
-	}
-	return -1
 }

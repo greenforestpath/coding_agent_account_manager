@@ -104,13 +104,20 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	done := make(chan struct{})
 	go func() {
-		for sig := range sigChan {
-			if cmd.Process != nil {
-				cmd.Process.Signal(sig)
+		for {
+			select {
+			case sig := <-sigChan:
+				if cmd.Process != nil {
+					cmd.Process.Signal(sig)
+				}
+			case <-done:
+				return
 			}
 		}
 	}()
+	defer close(done)
 	defer signal.Stop(sigChan)
 
 	// Run command
