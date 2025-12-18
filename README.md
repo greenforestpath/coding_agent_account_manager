@@ -211,6 +211,7 @@ carol@gmail.com
 | `caam delete <tool> <email>` | Remove a saved profile |
 | `caam paths [tool]` | Show auth file locations for each tool |
 | `caam clear <tool>` | Remove auth files (logout state) |
+| `caam uninstall` | Restore originals from `_original` and remove caam data/config |
 
 **Aliases:** `caam switch` and `caam use` work like `caam activate`
 
@@ -227,6 +228,14 @@ carol@gmail.com
 When `stealth.cooldown.enabled` is true, `caam activate` warns (and can block) if the target profile is still in cooldown. Use `caam activate <tool> <profile> --force` to override.
 
 When `stealth.rotation.enabled` is true, `caam activate <tool>` can fall back to rotation if there’s no default profile, and it will try to pick an alternative profile if the default is in cooldown.
+
+### Uninstall Notes
+
+`caam uninstall` restores auth from any available `_original` backups first, then removes caam’s data/config. Useful flags:
+
+- `--dry-run` shows what would be restored/removed
+- `--keep-backups` keeps the vault after restoring originals
+- `--force` skips the confirmation prompt
 
 ### Profile Isolation (Advanced)
 

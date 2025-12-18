@@ -244,7 +244,7 @@ func (c *SPMConfig) Save() error {
 	}
 
 	// Add header comment
-	header := []byte("# caam Smart Profile Management configuration\n# Documentation: https://github.com/your/caam#smart-profile-management\n\n")
+	header := []byte("# caam Smart Profile Management configuration\n# Documentation: https://github.com/Dicklesworthstone/coding_agent_account_manager/blob/main/docs/SMART_PROFILE_MANAGEMENT.md\n\n")
 	data = append(header, data...)
 
 	// Atomic write: write to temp file then rename
