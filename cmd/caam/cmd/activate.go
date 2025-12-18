@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/refresh"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/stealth"
 	"github.com/spf13/cobra"
 )
 
@@ -115,6 +118,46 @@ func runActivate(cmd *cobra.Command, args []string) error {
 						fmt.Printf("Warning: could not rotate old backups: %v\n", err)
 					}
 				}
+			}
+		}
+	}
+
+	// Stealth: optional delay before the actual switch happens.
+	if spmCfg.Stealth.SwitchDelay.Enabled {
+		delay, err := stealth.ComputeDelay(spmCfg.Stealth.SwitchDelay.MinSeconds, spmCfg.Stealth.SwitchDelay.MaxSeconds, nil)
+		if err != nil {
+			fmt.Printf("Warning: invalid stealth.switch_delay config: %v\n", err)
+		} else if delay > 0 {
+			fmt.Printf("Stealth mode: waiting %d seconds before switch...\n", int(delay.Round(time.Second).Seconds()))
+
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt)
+
+			skip := make(chan struct{})
+			stop := make(chan struct{})
+			go func() {
+				select {
+				case <-sigCh:
+					close(skip)
+				case <-stop:
+				case <-cmd.Context().Done():
+				}
+			}()
+
+			skipped, waitErr := stealth.Wait(cmd.Context(), delay, stealth.WaitOptions{
+				Output:        os.Stdout,
+				Skip:          skip,
+				ShowCountdown: spmCfg.Stealth.SwitchDelay.ShowCountdown,
+			})
+
+			close(stop)
+			signal.Stop(sigCh)
+
+			if waitErr != nil {
+				return fmt.Errorf("stealth delay: %w", waitErr)
+			}
+			if skipped {
+				fmt.Println("Skipping delay...")
 			}
 		}
 	}
