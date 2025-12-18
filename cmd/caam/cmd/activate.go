@@ -58,26 +58,8 @@ func runActivate(cmd *cobra.Command, args []string) error {
 	tool := strings.ToLower(args[0])
 	autoSelect, _ := cmd.Flags().GetBool("auto")
 
-	var profileName string
-	if len(args) == 2 && !autoSelect {
-		profileName = args[1]
-	} else if autoSelect {
-		// Use rotation algorithm to select profile
-		selected, err := selectProfileWithRotation(tool)
-		if err != nil {
-			return err
-		}
-		profileName = selected
-	} else {
-		var source string
-		var err error
-		profileName, source, err = resolveActivateProfile(tool)
-		if err != nil {
-			return err
-		}
-		if source != "" {
-			fmt.Printf("Using %s: %s/%s\n", source, tool, profileName)
-		}
+	if len(args) == 2 && autoSelect {
+		return fmt.Errorf("--auto cannot be used when a profile name is provided")
 	}
 
 	getFileSet, ok := tools[tool]
@@ -85,7 +67,13 @@ func runActivate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("unknown tool: %s (supported: codex, claude, gemini)", tool)
 	}
 
+	// Ensure vault is initialized before using it
+	if vault == nil {
+		vault = authfile.NewVault(authfile.DefaultVaultPath())
+	}
+
 	fileSet := getFileSet()
+	previousProfile, _ := vault.ActiveProfile(fileSet)
 
 	// Safety: on first activate, preserve the user's pre-caam auth state.
 	if did, err := vault.BackupOriginal(fileSet); err != nil {
@@ -98,18 +86,79 @@ func runActivate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// Invalid config should not crash activation; fall back to defaults.
 		spmCfg = config.DefaultSPMConfig()
+		err = nil
+	}
+
+	needDB := spmCfg.Analytics.Enabled || spmCfg.Stealth.Cooldown.Enabled || spmCfg.Stealth.Rotation.Enabled || autoSelect
+	var db *caamdb.DB
+	if needDB {
+		db, err = caamdb.Open()
+		if err != nil {
+			fmt.Printf("Warning: could not open database: %v\n", err)
+		} else {
+			defer db.Close()
+		}
+	}
+
+	var profileName string
+	var source string
+	var selection *rotation.Result
+
+	if len(args) == 2 {
+		profileName = args[1]
+	} else {
+		// Resolve from project/default first unless user explicitly requested rotation.
+		if !autoSelect {
+			var err error
+			profileName, source, err = resolveActivateProfile(tool, spmCfg)
+			if err != nil {
+				// If rotation is enabled, fall back to selecting automatically.
+				if !spmCfg.Stealth.Rotation.Enabled {
+					return err
+				}
+				autoSelect = true
+			} else if spmCfg.Stealth.Rotation.Enabled && db != nil {
+				// If the resolved default is in cooldown, automatically pick another profile.
+				now := time.Now().UTC()
+				if ev, err := db.ActiveCooldown(tool, profileName, now); err == nil && ev != nil {
+					autoSelect = true
+					source = "rotation (default in cooldown)"
+				}
+			}
+		}
+
+		if autoSelect {
+			profiles, err := vault.List(tool)
+			if err != nil {
+				return fmt.Errorf("list profiles: %w", err)
+			}
+
+			selection, err = selectProfileWithRotation(tool, profiles, previousProfile, spmCfg, db)
+			if err != nil {
+				return err
+			}
+
+			profileName = selection.Selected
+			if source == "" {
+				source = "rotation"
+			}
+		}
+
+		if source != "" {
+			fmt.Printf("Using %s: %s/%s\n", source, tool, profileName)
+			if selection != nil {
+				fmt.Println(rotation.FormatResult(selection))
+			}
+		}
 	}
 
 	// Stealth: enforce per-profile cooldowns (opt-in).
 	if spmCfg.Stealth.Cooldown.Enabled {
 		force, _ := cmd.Flags().GetBool("force")
 
-		db, err := caamdb.Open()
-		if err != nil {
-			fmt.Printf("Warning: could not open database for cooldown check: %v\n", err)
+		if db == nil {
+			fmt.Printf("Warning: cooldown enforcement enabled but database is unavailable\n")
 		} else {
-			defer db.Close()
-
 			now := time.Now().UTC()
 			ev, err := db.ActiveCooldown(tool, profileName, now)
 			if err != nil {
@@ -238,15 +287,30 @@ func runActivate(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("activate failed: %w", err)
 	}
 
+	if spmCfg.Analytics.Enabled && db != nil {
+		_ = db.LogEvent(caamdb.Event{
+			Type:        caamdb.EventActivate,
+			Provider:    tool,
+			ProfileName: profileName,
+			Details: map[string]any{
+				"previous_profile": previousProfile,
+				"selection_source": source,
+			},
+		})
+	}
+
 	fmt.Printf("Activated %s profile '%s'\n", tool, profileName)
 	fmt.Printf("  Run '%s' to start using this account\n", tool)
 	return nil
 }
 
-func resolveActivateProfile(tool string) (profileName string, source string, err error) {
+func resolveActivateProfile(tool string, spmCfg *config.SPMConfig) (profileName string, source string, err error) {
 	// Prefer project association (if enabled).
-	spmCfg, err := config.LoadSPMConfig()
-	if err == nil && spmCfg.Project.Enabled && projectStore != nil {
+	if spmCfg == nil {
+		spmCfg, _ = config.LoadSPMConfig()
+	}
+
+	if spmCfg != nil && spmCfg.Project.Enabled && projectStore != nil {
 		cwd, wdErr := os.Getwd()
 		if wdErr != nil {
 			return "", "", fmt.Errorf("get current directory: %w", wdErr)
@@ -308,63 +372,23 @@ func refreshIfNeeded(ctx context.Context, provider, profile string) error {
 	return nil
 }
 
-// selectProfileWithRotation uses the rotation algorithm to select a profile.
-func selectProfileWithRotation(tool string) (string, error) {
-	// Load SPM config to get rotation settings
-	spmCfg, err := config.LoadSPMConfig()
-	if err != nil {
-		spmCfg = config.DefaultSPMConfig()
-	}
-
-	// Check if rotation is enabled
-	if !spmCfg.Stealth.Rotation.Enabled {
-		return "", fmt.Errorf("rotation is not enabled; enable it in config.yaml under stealth.rotation.enabled")
-	}
-
-	// Get list of profiles for this tool
-	profiles, err := vault.List(tool)
-	if err != nil {
-		return "", fmt.Errorf("list profiles: %w", err)
-	}
-
+func selectProfileWithRotation(tool string, profiles []string, currentProfile string, spmCfg *config.SPMConfig, db *caamdb.DB) (*rotation.Result, error) {
 	if len(profiles) == 0 {
-		return "", fmt.Errorf("no profiles found for %s; create one with 'caam backup %s <name>'", tool, tool)
+		return nil, fmt.Errorf("no profiles found for %s; create one with 'caam backup %s <name>'", tool, tool)
 	}
 
-	// Get algorithm from config
-	algorithm := rotation.Algorithm(spmCfg.Stealth.Rotation.Algorithm)
-	if algorithm == "" {
-		algorithm = rotation.AlgorithmSmart
-	}
-
-	// Open database for cooldown checks
-	var db *caamdb.DB
-	if spmCfg.Stealth.Cooldown.Enabled {
-		db, err = caamdb.Open()
-		if err != nil {
-			fmt.Printf("Warning: could not open database for rotation: %v\n", err)
-		} else {
-			defer db.Close()
+	algorithm := rotation.AlgorithmSmart
+	if spmCfg != nil {
+		if a := strings.TrimSpace(spmCfg.Stealth.Rotation.Algorithm); a != "" {
+			algorithm = rotation.Algorithm(a)
 		}
 	}
 
-	// Get current active profile
-	getFileSet, ok := tools[tool]
-	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", tool)
-	}
-	currentProfile, _ := vault.ActiveProfile(getFileSet())
-
-	// Create selector and select profile
 	selector := rotation.NewSelector(algorithm, healthStore, db)
 	result, err := selector.Select(tool, profiles, currentProfile)
 	if err != nil {
-		return "", fmt.Errorf("rotation select: %w", err)
+		return nil, fmt.Errorf("rotation select: %w", err)
 	}
 
-	// Display the selection result
-	fmt.Print(rotation.FormatResult(result))
-	fmt.Println()
-
-	return result.Selected, nil
+	return result, nil
 }

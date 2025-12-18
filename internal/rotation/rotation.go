@@ -56,11 +56,11 @@ type Result struct {
 
 // Selector performs profile selection based on configured algorithm.
 type Selector struct {
-	algorithm    Algorithm
-	healthStore  *health.Storage
-	db           *caamdb.DB
-	rng          *rand.Rand
-	avoidRecent  time.Duration // Don't select profiles used within this duration
+	algorithm   Algorithm
+	healthStore *health.Storage
+	db          *caamdb.DB
+	rng         *rand.Rand
+	avoidRecent time.Duration // Don't select profiles used within this duration
 }
 
 // NewSelector creates a new profile selector.
@@ -315,10 +315,16 @@ func (s *Selector) selectSmart(tool string, profiles []string) (*Result, error) 
 						Text:     "Enterprise plan",
 						Positive: true,
 					})
-				case "pro", "team":
+				case "pro":
 					score.Score += 20
 					score.Reasons = append(score.Reasons, Reason{
-						Text:     fmt.Sprintf("%s plan", strings.Title(h.PlanType)),
+						Text:     "Pro plan",
+						Positive: true,
+					})
+				case "team":
+					score.Score += 20
+					score.Reasons = append(score.Reasons, Reason{
+						Text:     "Team plan",
 						Positive: true,
 					})
 				}
@@ -422,9 +428,21 @@ func (s *Selector) cooldownRemaining(tool, profile string, now time.Time) time.D
 // getLastActivation returns when a profile was last activated.
 // Returns zero time if unknown.
 func (s *Selector) getLastActivation(tool, profile string) time.Time {
-	// TODO: When activation tracking is implemented in the database,
-	// query for the last activation time of this profile.
-	// For now, return zero (unknown).
+	if s == nil || s.db == nil {
+		return time.Time{}
+	}
+
+	events, err := s.db.GetEvents(tool, profile, time.Time{}, 25)
+	if err != nil {
+		return time.Time{}
+	}
+
+	for _, ev := range events {
+		if ev.Type == caamdb.EventActivate && !ev.Timestamp.IsZero() {
+			return ev.Timestamp
+		}
+	}
+
 	return time.Time{}
 }
 
