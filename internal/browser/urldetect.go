@@ -39,12 +39,25 @@ func (d *URLDetector) Write(p []byte) (n int, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Check for URLs in this chunk
-	if d.callback != nil {
-		urls := URLPattern.FindAllString(string(p), -1)
-		for _, url := range urls {
-			d.callback(url)
+	d.buffer = append(d.buffer, p...)
+
+	for {
+		idx := bytes.IndexByte(d.buffer, '\n')
+		if idx < 0 {
+			break
 		}
+
+		line := d.buffer[:idx+1]
+		lineStr := string(line)
+
+		if d.callback != nil {
+			urls := URLPattern.FindAllString(lineStr, -1)
+			for _, url := range urls {
+				d.callback(url)
+			}
+		}
+
+		d.buffer = d.buffer[idx+1:]
 	}
 
 	// Always pass through to output
