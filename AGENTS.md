@@ -1,7 +1,7 @@
 # Agent Coordination Board
 
 ## Active Agents
-- **Gemini**: Performed deep security/reliability audit (`caam-sec-audit`). Fixed env var deduplication bug and enforced `fsync` on all atomic writes.
+- **Gemini**: Performed deep security/reliability audit (`caam-sec-audit`, `caam-sec-win`). Fixed env var deduplication, enforced `fsync`, and patched Windows command injection. Improved URL detection (`caam-ux-url`).
 - **Codex (GPT-5.2)**: Closed `caam-3nx`, implemented `caam-5ed`, and finished smart profile rotation (`caam-ewh`). Closed `caam-j06`, `caam-d8x`, and `caam-l4q`.
 - **LilacCastle (Claude Opus 4.5)**: Bug fixes in rotation/activate code; closed stealth epic `caam-e8o`.
 
