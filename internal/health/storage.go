@@ -90,6 +90,12 @@ func (s *Storage) Load() (*HealthStore, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	return s.loadLocked()
+}
+
+// loadLocked reads health data without acquiring a lock.
+// Caller must hold at least a read lock.
+func (s *Storage) loadLocked() (*HealthStore, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -118,6 +124,12 @@ func (s *Storage) Save(store *HealthStore) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.saveLocked(store)
+}
+
+// saveLocked writes health data without acquiring a lock.
+// Caller must hold a write lock.
+func (s *Storage) saveLocked(store *HealthStore) error {
 	// Ensure directory exists
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -178,7 +190,11 @@ func (s *Storage) GetProfile(provider, name string) (*ProfileHealth, error) {
 
 // UpdateProfile updates or creates health data for a profile.
 func (s *Storage) UpdateProfile(provider, name string, health *ProfileHealth) error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -186,12 +202,16 @@ func (s *Storage) UpdateProfile(provider, name string, health *ProfileHealth) er
 	key := profileKey(provider, name)
 	store.Profiles[key] = health
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 // DeleteProfile removes health data for a profile.
 func (s *Storage) DeleteProfile(provider, name string) error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -199,12 +219,16 @@ func (s *Storage) DeleteProfile(provider, name string) error {
 	key := profileKey(provider, name)
 	delete(store.Profiles, key)
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 // RecordError increments the error count for a profile and applies a penalty.
 func (s *Storage) RecordError(provider, name string, errCause error) error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -223,12 +247,16 @@ func (s *Storage) RecordError(provider, name string, errCause error) error {
 	penaltyAmount := PenaltyForError(errCause)
 	health.AddPenalty(penaltyAmount, time.Now())
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 // ClearErrors resets the error count for a profile.
 func (s *Storage) ClearErrors(provider, name string) error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -242,12 +270,16 @@ func (s *Storage) ClearErrors(provider, name string) error {
 	health.ErrorCount1h = 0
 	health.LastError = time.Time{}
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 // SetTokenExpiry updates the token expiry time for a profile.
 func (s *Storage) SetTokenExpiry(provider, name string, expiresAt time.Time) error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -262,12 +294,16 @@ func (s *Storage) SetTokenExpiry(provider, name string, expiresAt time.Time) err
 	health.TokenExpiresAt = expiresAt
 	health.LastChecked = time.Now()
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 // SetPlanType updates the plan type for a profile.
 func (s *Storage) SetPlanType(provider, name, planType string) error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -281,13 +317,17 @@ func (s *Storage) SetPlanType(provider, name, planType string) error {
 
 	health.PlanType = planType
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 // DecayPenalties applies penalty decay to all profiles.
 // Call this periodically (e.g., every 5 minutes).
 func (s *Storage) DecayPenalties() error {
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -304,7 +344,7 @@ func (s *Storage) DecayPenalties() error {
 	}
 
 	if modified {
-		return s.Save(store)
+		return s.saveLocked(store)
 	}
 	return nil
 }
