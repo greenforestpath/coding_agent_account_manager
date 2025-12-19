@@ -53,6 +53,12 @@ func (s *Store) Load() (*StoreData, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	return s.loadLocked()
+}
+
+// loadLocked reads store data without acquiring a lock.
+// Caller must hold at least a read lock.
+func (s *Store) loadLocked() (*StoreData, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -75,6 +81,12 @@ func (s *Store) Save(store *StoreData) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.saveLocked(store)
+}
+
+// saveLocked writes store data without acquiring a lock.
+// Caller must hold a write lock.
+func (s *Store) saveLocked(store *StoreData) error {
 	if store == nil {
 		store = newStoreData()
 	}
@@ -135,7 +147,11 @@ func (s *Store) SetAssociation(projectPath, provider, profile string) error {
 		return err
 	}
 
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -145,7 +161,7 @@ func (s *Store) SetAssociation(projectPath, provider, profile string) error {
 	}
 	store.Associations[key][provider] = profile
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 func (s *Store) RemoveAssociation(projectPath, provider string) error {
@@ -158,7 +174,11 @@ func (s *Store) RemoveAssociation(projectPath, provider string) error {
 		return err
 	}
 
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
@@ -172,7 +192,7 @@ func (s *Store) RemoveAssociation(projectPath, provider string) error {
 		delete(store.Associations, key)
 	}
 
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 func (s *Store) DeleteProject(projectPath string) error {
@@ -181,13 +201,17 @@ func (s *Store) DeleteProject(projectPath string) error {
 		return err
 	}
 
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
 
 	delete(store.Associations, key)
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 func (s *Store) SetDefault(provider, profile string) error {
@@ -200,12 +224,16 @@ func (s *Store) SetDefault(provider, profile string) error {
 		return fmt.Errorf("profile cannot be empty")
 	}
 
-	store, err := s.Load()
+	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	store, err := s.loadLocked()
 	if err != nil {
 		return err
 	}
 	store.Defaults[provider] = profile
-	return s.Save(store)
+	return s.saveLocked(store)
 }
 
 func (s *Store) Resolve(dir string) (*Resolved, error) {
