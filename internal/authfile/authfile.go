@@ -267,8 +267,34 @@ func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
-	if err := os.WriteFile(metaPath, raw, 0600); err != nil {
-		return fmt.Errorf("write metadata: %w", err)
+
+	// Atomic write: write to temp file, fsync, then rename
+	tmpPath := metaPath + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create temp metadata file: %w", err)
+	}
+
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("write temp metadata file: %w", err)
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("sync temp metadata file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("close temp metadata file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, metaPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename metadata file: %w", err)
 	}
 
 	return nil
