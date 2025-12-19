@@ -1125,6 +1125,7 @@ func runSyncStatusJSON(state *sync.SyncState, out io.Writer) error {
 
 	output := statusJSON{
 		AutoSync: state.Pool.AutoSync,
+		Machines: []machineJSON{}, // Initialize as empty array, not nil
 	}
 
 	if state.Identity != nil {
@@ -1178,7 +1179,14 @@ func runSyncQueueProcess(state *sync.SyncState, out io.Writer) error {
 	fmt.Fprintln(out, "Processing pending retries...")
 	fmt.Fprintln(out, "")
 
+	// Track entries to remove after processing (avoid modifying slice during iteration)
+	type entryKey struct {
+		provider, profile, machine string
+	}
+	var toRemove []entryKey
+
 	processed := 0
+	total := len(state.Queue.Entries)
 	for _, entry := range state.Queue.Entries {
 		profile := fmt.Sprintf("%s/%s", entry.Provider, entry.Profile)
 		fmt.Fprintf(out, "  Retrying %s on %s...", profile, entry.Machine)
@@ -1186,6 +1194,8 @@ func runSyncQueueProcess(state *sync.SyncState, out io.Writer) error {
 		results, err := syncer.SyncProfile(ctx, entry.Provider, entry.Profile)
 		if err != nil {
 			fmt.Fprintf(out, " ✗ %v\n", err)
+			// Update the entry's error message (will be persisted on save)
+			state.AddToQueue(entry.Provider, entry.Profile, entry.Machine, err.Error())
 			continue
 		}
 
@@ -1199,14 +1209,27 @@ func runSyncQueueProcess(state *sync.SyncState, out io.Writer) error {
 
 		if success {
 			fmt.Fprintln(out, " ✓ OK")
+			toRemove = append(toRemove, entryKey{entry.Provider, entry.Profile, entry.Machine})
 			processed++
 		} else {
 			fmt.Fprintln(out, " ✗ Failed")
+			// AddToQueue will increment the attempt counter for existing entries
+			state.AddToQueue(entry.Provider, entry.Profile, entry.Machine, "sync failed")
 		}
 	}
 
+	// Remove successful entries from queue
+	for _, key := range toRemove {
+		state.RemoveFromQueue(key.provider, key.profile, key.machine)
+	}
+
+	// Save updated state
+	if err := state.Save(); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+
 	fmt.Fprintln(out, "")
-	fmt.Fprintf(out, "Processed %d/%d queue entries\n", processed, len(state.Queue.Entries))
+	fmt.Fprintf(out, "Processed %d/%d queue entries\n", processed, total)
 	return nil
 }
 
