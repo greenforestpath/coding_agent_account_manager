@@ -272,6 +272,8 @@ func (i *VaultImporter) extractEncryptedBundle(destDir, password string) error {
 	if err := os.WriteFile(tempZip, plainData, 0600); err != nil {
 		return fmt.Errorf("write decrypted zip: %w", err)
 	}
+	// Ensure temp zip is always cleaned up, even on error
+	defer os.Remove(tempZip)
 
 	// Extract the decrypted zip
 	r, err := zip.OpenReader(tempZip)
@@ -286,22 +288,45 @@ func (i *VaultImporter) extractEncryptedBundle(destDir, password string) error {
 		}
 	}
 
-	// Clean up temp zip
-	os.Remove(tempZip)
-
 	return nil
 }
 
 // extractZipFile extracts a single file from a zip archive.
 func extractZipFile(f *zip.File, destDir string) error {
-	// Sanitize path to prevent directory traversal
-	path := filepath.Join(destDir, DenormalizePath(f.Name))
-	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(destDir)) {
+	// Sanitize path to prevent directory traversal (Zip Slip attack)
+	// First, clean the zip entry name to normalize any path components
+	cleanName := filepath.Clean(DenormalizePath(f.Name))
+
+	// Reject any path that starts with .. or is absolute
+	if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
+		return fmt.Errorf("invalid file path (path traversal attempt): %s", f.Name)
+	}
+
+	// Construct the target path
+	path := filepath.Join(destDir, cleanName)
+
+	// Double-check: use filepath.Rel to verify the path is within destDir
+	// This catches edge cases like symlinks or unusual path normalization
+	relPath, err := filepath.Rel(destDir, path)
+	if err != nil || strings.HasPrefix(relPath, "..") || filepath.IsAbs(relPath) {
+		return fmt.Errorf("invalid file path (escapes destination): %s", f.Name)
+	}
+
+	// Final prefix check after all cleaning
+	cleanDest := filepath.Clean(destDir) + string(filepath.Separator)
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath, cleanDest) && cleanPath != filepath.Clean(destDir) {
 		return fmt.Errorf("invalid file path: %s", f.Name)
 	}
 
 	if f.FileInfo().IsDir() {
 		return os.MkdirAll(path, 0700)
+	}
+
+	// Check uncompressed size to prevent zip bombs (100MB limit per file)
+	const maxExtractedFileSize = 100 * 1024 * 1024
+	if f.UncompressedSize64 > maxExtractedFileSize {
+		return fmt.Errorf("file %s too large: %d bytes (max %d)", f.Name, f.UncompressedSize64, maxExtractedFileSize)
 	}
 
 	// Create parent directories
@@ -323,8 +348,16 @@ func extractZipFile(f *zip.File, destDir string) error {
 	}
 	defer dest.Close()
 
-	_, err = io.Copy(dest, rc)
-	return err
+	// Use LimitReader as defense in depth against zip bombs with fake size headers
+	limited := io.LimitReader(rc, maxExtractedFileSize+1)
+	written, err := io.Copy(dest, limited)
+	if err != nil {
+		return err
+	}
+	if written > maxExtractedFileSize {
+		return fmt.Errorf("file %s exceeded size limit during extraction", f.Name)
+	}
+	return nil
 }
 
 // previewImport determines what would happen during import without making changes.
@@ -596,20 +629,31 @@ func (i *VaultImporter) importVault(bundleDir string, manifest *ManifestV1, opts
 	return nil
 }
 
-// copyProfileDirectory copies a profile directory from bundle to vault.
+// copyProfileDirectory copies a profile directory from bundle to vault atomically.
+// Uses a temporary directory to ensure the original is preserved if the copy fails.
 func copyProfileDirectory(src, dst string) error {
-	// Remove existing destination if it exists
-	if err := os.RemoveAll(dst); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove existing: %w", err)
+	// Ensure parent directory exists
+	parentDir := filepath.Dir(dst)
+	if err := os.MkdirAll(parentDir, 0700); err != nil {
+		return fmt.Errorf("create parent dir: %w", err)
 	}
 
-	// Create destination directory
-	if err := os.MkdirAll(dst, 0700); err != nil {
-		return fmt.Errorf("create dir: %w", err)
+	// Create a temporary directory in the same parent to ensure atomic rename works
+	tmpDir, err := os.MkdirTemp(parentDir, ".caam_import_*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
 	}
 
-	// Walk and copy
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	// Clean up temp dir on failure
+	success := false
+	defer func() {
+		if !success {
+			os.RemoveAll(tmpDir)
+		}
+	}()
+
+	// Copy to temporary directory
+	if err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -619,14 +663,47 @@ func copyProfileDirectory(src, dst string) error {
 			return err
 		}
 
-		dstPath := filepath.Join(dst, relPath)
+		dstPath := filepath.Join(tmpDir, relPath)
 
 		if d.IsDir() {
 			return os.MkdirAll(dstPath, 0700)
 		}
 
 		return copyFile(path, dstPath)
-	})
+	}); err != nil {
+		return fmt.Errorf("copy files: %w", err)
+	}
+
+	// Check if destination exists
+	_, statErr := os.Stat(dst)
+	dstExists := statErr == nil
+
+	// If destination exists, rename it to backup first
+	backupPath := dst + ".bak"
+	if dstExists {
+		// Remove any existing backup
+		os.RemoveAll(backupPath)
+		if err := os.Rename(dst, backupPath); err != nil {
+			return fmt.Errorf("backup existing: %w", err)
+		}
+	}
+
+	// Rename temp directory to destination (atomic on same filesystem)
+	if err := os.Rename(tmpDir, dst); err != nil {
+		// Restore backup if rename failed
+		if dstExists {
+			os.Rename(backupPath, dst)
+		}
+		return fmt.Errorf("rename to destination: %w", err)
+	}
+
+	// Success - remove backup and mark success to prevent temp cleanup
+	success = true
+	if dstExists {
+		os.RemoveAll(backupPath)
+	}
+
+	return nil
 }
 
 // copyFile copies a single file.

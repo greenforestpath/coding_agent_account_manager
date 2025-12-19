@@ -42,6 +42,7 @@ type SSHClient struct {
 	machine    *Machine
 	client     *ssh.Client
 	sftp       *sftp.Client
+	agentConn  net.Conn // SSH agent connection (needs cleanup)
 	connected  bool
 	lastConnAt time.Time
 	opts       ConnectOptions
@@ -135,6 +136,10 @@ func (c *SSHClient) Disconnect() error {
 		c.sftp.Close()
 		c.sftp = nil
 	}
+	if c.agentConn != nil {
+		c.agentConn.Close()
+		c.agentConn = nil
+	}
 	if c.client != nil {
 		err := c.client.Close()
 		c.client = nil
@@ -155,8 +160,9 @@ func (c *SSHClient) getAuthMethods() ([]ssh.AuthMethod, error) {
 
 	// 1. Try ssh-agent first
 	if c.opts.UseAgent {
-		if agentAuth, err := getSSHAgentAuth(); err == nil {
+		if agentAuth, agentConn, err := getSSHAgentAuth(); err == nil {
 			methods = append(methods, agentAuth)
+			c.agentConn = agentConn // Store for cleanup in Disconnect()
 		}
 	}
 
@@ -185,7 +191,8 @@ func (c *SSHClient) hostKeyCallback() (ssh.HostKeyCallback, error) {
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return ssh.InsecureIgnoreHostKey(), nil
+		// Can't determine home directory - fail secure rather than silently ignoring host keys
+		return nil, fmt.Errorf("cannot determine home directory for known_hosts: %w", err)
 	}
 
 	knownHostsPath := filepath.Join(homeDir, ".ssh", "known_hosts")
@@ -200,7 +207,8 @@ func (c *SSHClient) hostKeyCallback() (ssh.HostKeyCallback, error) {
 	// No known_hosts file - create directory and auto-add
 	sshDir := filepath.Dir(knownHostsPath)
 	if err := os.MkdirAll(sshDir, 0700); err != nil {
-		return ssh.InsecureIgnoreHostKey(), nil
+		// Can't create .ssh directory - fail secure rather than silently ignoring host keys
+		return nil, fmt.Errorf("cannot create .ssh directory for known_hosts: %w", err)
 	}
 
 	return autoAddHostKeyCallback(nil, knownHostsPath), nil
@@ -253,19 +261,20 @@ func addToKnownHosts(path, hostname string, key ssh.PublicKey) error {
 }
 
 // getSSHAgentAuth returns an authentication method using ssh-agent.
-func getSSHAgentAuth() (ssh.AuthMethod, error) {
+// Returns the auth method and the connection (caller must close when done).
+func getSSHAgentAuth() (ssh.AuthMethod, net.Conn, error) {
 	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
-		return nil, errors.New("SSH_AUTH_SOCK not set")
+		return nil, nil, errors.New("SSH_AUTH_SOCK not set")
 	}
 
 	conn, err := net.Dial("unix", socket)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	agentClient := agent.NewClient(conn)
-	return ssh.PublicKeysCallback(agentClient.Signers), nil
+	return ssh.PublicKeysCallback(agentClient.Signers), conn, nil
 }
 
 // loadSSHKey loads an SSH private key from a file.
@@ -473,6 +482,40 @@ func (c *SSHClient) BatchWrite(files map[string][]byte, mode os.FileMode) error 
 		}
 	}
 	return nil
+}
+
+// posixJoin joins path elements using forward slashes (for SFTP/remote paths).
+// Unlike filepath.Join, this always uses forward slashes regardless of OS.
+func posixJoin(elem ...string) string {
+	if len(elem) == 0 {
+		return ""
+	}
+	// Filter empty elements and join with forward slash
+	var parts []string
+	for _, e := range elem {
+		if e != "" {
+			parts = append(parts, e)
+		}
+	}
+	result := strings.Join(parts, "/")
+	// Clean up double slashes
+	for strings.Contains(result, "//") {
+		result = strings.ReplaceAll(result, "//", "/")
+	}
+	return result
+}
+
+// posixDir returns the directory portion of a path using forward slashes.
+func posixDir(path string) string {
+	// Find last forward slash
+	lastSlash := strings.LastIndex(path, "/")
+	if lastSlash < 0 {
+		return "."
+	}
+	if lastSlash == 0 {
+		return "/"
+	}
+	return path[:lastSlash]
 }
 
 // randomString generates a random string of the given length.

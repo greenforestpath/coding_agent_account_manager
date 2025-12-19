@@ -309,36 +309,32 @@ func processQueue(state *SyncState, config AutoSyncConfig) {
 	// Override syncer's state
 	syncer.state = state
 
-	// Group entries by provider/profile for efficient processing
-	profileEntries := make(map[string][]QueueEntry)
+	// Process each queue entry individually with its specific machine
 	for _, entry := range state.Queue.Entries {
-		key := profileKey(entry.Provider, entry.Profile)
-		profileEntries[key] = append(profileEntries[key], entry)
-	}
-
-	// Process each profile
-	for _, entries := range profileEntries {
-		if len(entries) == 0 {
+		// Find the specific machine that failed
+		machine := state.Pool.GetMachine(entry.Machine)
+		if machine == nil {
+			// Machine was removed from pool, remove from queue
+			state.RemoveFromQueue(entry.Provider, entry.Profile, entry.Machine)
 			continue
 		}
 
-		entry := entries[0] // Use first entry for provider/profile
-		results, err := syncer.SyncProfile(ctx, entry.Provider, entry.Profile)
+		// Sync only with the specific machine that failed
+		result, err := syncer.SyncProfileWithMachine(ctx, entry.Provider, entry.Profile, machine)
 		if err != nil {
 			logSyncError("process queue entry", err, config.Verbose)
 			continue
 		}
 
-		// Remove successful syncs from queue
-		for _, r := range results {
-			if r.Success && r.Operation != nil && r.Operation.Machine != nil {
-				state.RemoveFromQueue(entry.Provider, entry.Profile, r.Operation.Machine.ID)
-			}
+		if result.Success {
+			state.RemoveFromQueue(entry.Provider, entry.Profile, entry.Machine)
 		}
 	}
 
 	// Save updated queue
-	state.Save()
+	if err := state.Save(); err != nil {
+		logSyncError("save state", err, config.Verbose)
+	}
 }
 
 // SetThrottleInterval updates the global throttle interval.

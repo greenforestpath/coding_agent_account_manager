@@ -212,6 +212,79 @@ func (s *Syncer) SyncWithMachine(ctx context.Context, m *Machine) ([]*SyncResult
 	return results, nil
 }
 
+// SyncProfileWithMachine syncs a specific profile with a specific machine.
+// This is useful for queue processing where we only want to retry the failed machine.
+func (s *Syncer) SyncProfileWithMachine(ctx context.Context, provider, profile string, m *Machine) (*SyncResult, error) {
+	if m == nil {
+		return nil, fmt.Errorf("machine is nil")
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	client, err := s.pool.Get(m)
+	if err != nil {
+		m.SetError(err.Error())
+		return &SyncResult{
+			Operation: &SyncOperation{
+				Provider:  provider,
+				Profile:   profile,
+				Direction: SyncSkip,
+				Machine:   m,
+			},
+			Success: false,
+			Error:   err,
+		}, nil
+	}
+
+	p := ProfileRef{Provider: provider, Profile: profile}
+	op, err := s.determineSyncOperation(client, m, p)
+	if err != nil {
+		return &SyncResult{
+			Operation: &SyncOperation{
+				Provider:  provider,
+				Profile:   profile,
+				Direction: SyncSkip,
+				Machine:   m,
+			},
+			Success: false,
+			Error:   err,
+		}, nil
+	}
+
+	if op == nil || op.Direction == SyncSkip {
+		return &SyncResult{
+			Operation: &SyncOperation{
+				Provider:  provider,
+				Profile:   profile,
+				Direction: SyncSkip,
+				Machine:   m,
+			},
+			Success: true,
+		}, nil
+	}
+
+	result := s.executeOperation(client, op)
+
+	// Record in history
+	s.state.AddToHistory(HistoryEntry{
+		Timestamp: time.Now(),
+		Trigger:   "retry",
+		Provider:  provider,
+		Profile:   profile,
+		Machine:   m.Name,
+		Action:    string(op.Direction),
+		Success:   result.Success,
+		Error:     errorToString(result.Error),
+		Duration:  result.Duration,
+	})
+
+	return result, nil
+}
+
 // SyncProfile synchronizes a specific profile with all machines.
 func (s *Syncer) SyncProfile(ctx context.Context, provider, profile string) ([]*SyncResult, error) {
 	if s.state.Pool == nil || s.state.Pool.IsEmpty() {

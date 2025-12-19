@@ -459,7 +459,14 @@ func runSyncAdd(cmd *cobra.Command, args []string) error {
 		parts := strings.Split(address, ":")
 		address = parts[0]
 		if len(parts) > 1 {
-			fmt.Sscanf(parts[1], "%d", &port)
+			var parsedPort int
+			if _, err := fmt.Sscanf(parts[1], "%d", &parsedPort); err != nil {
+				return fmt.Errorf("invalid port %q: %w", parts[1], err)
+			}
+			if parsedPort < 1 || parsedPort > 65535 {
+				return fmt.Errorf("port %d out of valid range (1-65535)", parsedPort)
+			}
+			port = parsedPort
 		}
 	}
 
@@ -1086,7 +1093,14 @@ func promptForMachine(reader *bufio.Reader, out io.Writer) (*sync.Machine, error
 		parts := strings.Split(address, ":")
 		address = parts[0]
 		if len(parts) > 1 {
-			fmt.Sscanf(parts[1], "%d", &port)
+			var parsedPort int
+			if _, err := fmt.Sscanf(parts[1], "%d", &parsedPort); err != nil {
+				return nil, fmt.Errorf("invalid port %q: %w", parts[1], err)
+			}
+			if parsedPort < 1 || parsedPort > 65535 {
+				return nil, fmt.Errorf("port %d out of valid range (1-65535)", parsedPort)
+			}
+			port = parsedPort
 		}
 	}
 
@@ -1191,30 +1205,34 @@ func runSyncQueueProcess(state *sync.SyncState, out io.Writer) error {
 		profile := fmt.Sprintf("%s/%s", entry.Provider, entry.Profile)
 		fmt.Fprintf(out, "  Retrying %s on %s...", profile, entry.Machine)
 
-		results, err := syncer.SyncProfile(ctx, entry.Provider, entry.Profile)
+		// Find the specific machine that failed
+		machine := state.Pool.GetMachine(entry.Machine)
+		if machine == nil {
+			fmt.Fprintf(out, " ✗ machine not found in pool\n")
+			// Machine was removed from pool, remove from queue
+			toRemove = append(toRemove, entryKey{entry.Provider, entry.Profile, entry.Machine})
+			continue
+		}
+
+		// Sync only with the specific machine that failed, not all machines
+		result, err := syncer.SyncProfileWithMachine(ctx, entry.Provider, entry.Profile, machine)
 		if err != nil {
 			fmt.Fprintf(out, " ✗ %v\n", err)
-			// Update the entry's error message (will be persisted on save)
 			state.AddToQueue(entry.Provider, entry.Profile, entry.Machine, err.Error())
 			continue
 		}
 
-		success := true
-		for _, r := range results {
-			if !r.Success {
-				success = false
-				break
-			}
-		}
-
-		if success {
+		if result.Success {
 			fmt.Fprintln(out, " ✓ OK")
 			toRemove = append(toRemove, entryKey{entry.Provider, entry.Profile, entry.Machine})
 			processed++
 		} else {
-			fmt.Fprintln(out, " ✗ Failed")
-			// AddToQueue will increment the attempt counter for existing entries
-			state.AddToQueue(entry.Provider, entry.Profile, entry.Machine, "sync failed")
+			errMsg := "sync failed"
+			if result.Error != nil {
+				errMsg = result.Error.Error()
+			}
+			fmt.Fprintf(out, " ✗ %s\n", errMsg)
+			state.AddToQueue(entry.Provider, entry.Profile, entry.Machine, errMsg)
 		}
 	}
 
