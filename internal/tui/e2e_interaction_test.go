@@ -330,9 +330,17 @@ func TestE2E_ActionKeyBindings(t *testing.T) {
 			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{tc.key}})
 			m = updated.(Model)
 
-			// Should have a status message (indicating action was triggered)
-			if m.statusMsg == "" {
-				t.Errorf("Expected status message after pressing %q", tc.key)
+			// Should have a status message OR show dialog (backup key can show dialog if auth files exist)
+			if tc.key == 'b' {
+				// Backup: either status message OR backup dialog shown
+				if m.statusMsg == "" && m.backupDialog == nil {
+					t.Errorf("Expected status message or backup dialog after pressing %q", tc.key)
+				}
+			} else {
+				// Other actions should always produce a status message
+				if m.statusMsg == "" {
+					t.Errorf("Expected status message after pressing %q", tc.key)
+				}
 			}
 
 			h.Log.Info("Action key tested", map[string]interface{}{

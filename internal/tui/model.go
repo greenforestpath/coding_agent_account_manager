@@ -29,6 +29,8 @@ const (
 	stateConfirm
 	stateSearch
 	stateHelp
+	stateBackupDialog
+	stateConfirmOverwrite
 )
 
 // confirmAction represents the action being confirmed.
@@ -92,6 +94,11 @@ type Model struct {
 	// Confirmation state
 	pendingAction confirmAction
 	searchQuery   string
+
+	// Dialog state for backup flow
+	backupDialog   *TextInputDialog
+	confirmDialog  *ConfirmDialog
+	pendingProfile string // Profile name pending overwrite confirmation
 }
 
 // DefaultProviders returns the default list of provider names.
@@ -519,6 +526,10 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Any key returns to list
 		m.state = stateList
 		return m, nil
+	case stateBackupDialog:
+		return m.handleBackupDialogKeys(msg)
+	case stateConfirmOverwrite:
+		return m.handleConfirmOverwriteKeys(msg)
 	}
 
 	// Normal list view key handling
@@ -727,10 +738,180 @@ func (m Model) handleDeleteProfile() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleBackupProfile backs up the current auth state.
+// handleBackupProfile initiates backup of the current auth state to a named profile.
 func (m Model) handleBackupProfile() (tea.Model, tea.Cmd) {
-	m.statusMsg = fmt.Sprintf("Backup %s auth... (not yet implemented)", m.currentProvider())
+	provider := m.currentProvider()
+	if provider == "" {
+		m.statusMsg = "No provider selected"
+		return m, nil
+	}
+
+	// Check if auth files exist for this provider
+	fileSet, ok := authFileSetForProvider(provider)
+	if !ok {
+		m.statusMsg = fmt.Sprintf("Unknown provider: %s", provider)
+		return m, nil
+	}
+
+	if !authfile.HasAuthFiles(fileSet) {
+		m.statusMsg = fmt.Sprintf("No auth files found for %s - nothing to backup", provider)
+		return m, nil
+	}
+
+	// Create text input dialog for profile name
+	m.backupDialog = NewTextInputDialog(
+		fmt.Sprintf("Backup %s Auth", provider),
+		"Enter profile name (e.g., email address):",
+	)
+	m.backupDialog.SetPlaceholder("user@example.com")
+	m.backupDialog.SetWidth(50)
+	m.state = stateBackupDialog
+	m.statusMsg = ""
 	return m, nil
+}
+
+// handleBackupDialogKeys handles key input for the backup dialog.
+func (m Model) handleBackupDialogKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.backupDialog == nil {
+		m.state = stateList
+		return m, nil
+	}
+
+	// Update the dialog with the key press
+	var cmd tea.Cmd
+	m.backupDialog, cmd = m.backupDialog.Update(msg)
+
+	// Check dialog result
+	switch m.backupDialog.Result() {
+	case DialogResultSubmit:
+		profileName := m.backupDialog.Value()
+		return m.processBackupSubmit(profileName)
+
+	case DialogResultCancel:
+		m.backupDialog = nil
+		m.state = stateList
+		m.statusMsg = "Backup cancelled"
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+// processBackupSubmit validates the profile name and initiates backup.
+func (m Model) processBackupSubmit(profileName string) (tea.Model, tea.Cmd) {
+	provider := m.currentProvider()
+
+	// Validate profile name
+	profileName = strings.TrimSpace(profileName)
+	if profileName == "" {
+		m.statusMsg = "Profile name cannot be empty"
+		m.backupDialog.Reset()
+		return m, nil
+	}
+
+	// Check for forbidden characters
+	if strings.ContainsAny(profileName, "/\\:*?\"<>|") {
+		m.statusMsg = "Profile name contains invalid characters"
+		m.backupDialog.Reset()
+		return m, nil
+	}
+
+	// Check if profile already exists
+	vault := authfile.NewVault(m.vaultPath)
+	profiles, err := vault.List(provider)
+	if err != nil {
+		m.statusMsg = fmt.Sprintf("Error listing profiles: %v", err)
+		m.backupDialog = nil
+		m.state = stateList
+		return m, nil
+	}
+
+	profileExists := false
+	for _, p := range profiles {
+		if p == profileName {
+			profileExists = true
+			break
+		}
+	}
+
+	if profileExists {
+		// Show overwrite confirmation dialog
+		m.backupDialog = nil
+		m.pendingProfile = profileName
+		m.confirmDialog = NewConfirmDialog(
+			"Profile Exists",
+			fmt.Sprintf("Profile '%s' already exists. Overwrite?", profileName),
+		)
+		m.confirmDialog.SetLabels("Overwrite", "Cancel")
+		m.confirmDialog.SetWidth(50)
+		m.state = stateConfirmOverwrite
+		return m, nil
+	}
+
+	// Execute backup
+	return m.executeBackup(profileName)
+}
+
+// handleConfirmOverwriteKeys handles key input for the overwrite confirmation dialog.
+func (m Model) handleConfirmOverwriteKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirmDialog == nil {
+		m.state = stateList
+		return m, nil
+	}
+
+	// Update the dialog with the key press
+	var cmd tea.Cmd
+	m.confirmDialog, cmd = m.confirmDialog.Update(msg)
+
+	// Check dialog result
+	switch m.confirmDialog.Result() {
+	case DialogResultSubmit:
+		if m.confirmDialog.Confirmed() {
+			profileName := m.pendingProfile
+			m.confirmDialog = nil
+			m.pendingProfile = ""
+			return m.executeBackup(profileName)
+		}
+		// User selected "No" - cancel overwrite
+		m.confirmDialog = nil
+		m.pendingProfile = ""
+		m.state = stateList
+		m.statusMsg = "Backup cancelled"
+		return m, nil
+
+	case DialogResultCancel:
+		m.confirmDialog = nil
+		m.pendingProfile = ""
+		m.state = stateList
+		m.statusMsg = "Backup cancelled"
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+// executeBackup performs the actual backup operation.
+func (m Model) executeBackup(profileName string) (tea.Model, tea.Cmd) {
+	provider := m.currentProvider()
+	fileSet, ok := authFileSetForProvider(provider)
+	if !ok {
+		m.state = stateList
+		m.statusMsg = fmt.Sprintf("Unknown provider: %s", provider)
+		return m, nil
+	}
+
+	vault := authfile.NewVault(m.vaultPath)
+	if err := vault.Backup(fileSet, profileName); err != nil {
+		m.state = stateList
+		m.statusMsg = fmt.Sprintf("Backup failed: %v", err)
+		return m, nil
+	}
+
+	m.state = stateList
+	m.statusMsg = fmt.Sprintf("Backed up %s auth to '%s'", provider, profileName)
+
+	// Reload profiles to show the new backup
+	return m, m.loadProfiles
 }
 
 // handleLoginProfile initiates login/refresh for the selected profile.
@@ -929,9 +1110,44 @@ func (m Model) View() string {
 	switch m.state {
 	case stateHelp:
 		return m.helpView()
+	case stateBackupDialog:
+		return m.dialogOverlayView(m.backupDialog.View())
+	case stateConfirmOverwrite:
+		return m.dialogOverlayView(m.confirmDialog.View())
 	default:
 		return m.mainView()
 	}
+}
+
+// dialogOverlayView renders the main view with a dialog overlay centered on top.
+func (m Model) dialogOverlayView(dialogContent string) string {
+	// Render the main view as background
+	mainView := m.mainView()
+
+	// Center the dialog on the screen
+	dialogWidth := lipgloss.Width(dialogContent)
+	dialogHeight := lipgloss.Height(dialogContent)
+
+	// Calculate position to center
+	x := (m.width - dialogWidth) / 2
+	y := (m.height - dialogHeight) / 2
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+
+	// Create a positioned dialog overlay
+	positioned := lipgloss.Place(
+		m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		dialogContent,
+	)
+
+	// Dim the background slightly by replacing it with the positioned dialog
+	_ = mainView // Background is implied by the dialog box styling
+	return positioned
 }
 
 // mainView renders the main list view.

@@ -49,6 +49,20 @@ func ConfigPath() string {
 	return filepath.Join(homeDir, ".config", "caam", "config.json")
 }
 
+// DefaultDataPath returns the base caam data directory path.
+// This follows XDG Base Directory Specification.
+func DefaultDataPath() string {
+	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+		return filepath.Join(xdgData, "caam")
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback to current directory - unusual but handles edge cases
+		return filepath.Join(".local", "share", "caam")
+	}
+	return filepath.Join(homeDir, ".local", "share", "caam")
+}
+
 // Load reads the configuration from disk.
 func Load() (*Config, error) {
 	configPath := ConfigPath()

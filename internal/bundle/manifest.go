@@ -9,6 +9,7 @@
 package bundle
 
 import (
+	"encoding/base64"
 	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/version"
@@ -196,14 +197,26 @@ func NewManifest() *ManifestV1 {
 	}
 }
 
-// NewEncryptionMetadata creates new EncryptionMetadata with default settings.
+// NewEncryptionMetadata creates new EncryptionMetadata with the given salt and nonce.
+// Both salt and nonce are base64-encoded for JSON serialization.
 func NewEncryptionMetadata(salt, nonce []byte) *EncryptionMetadata {
 	return &EncryptionMetadata{
 		Version:      1,
 		Algorithm:    "aes-256-gcm",
 		KDF:          "argon2id",
-		Salt:         "", // Will be set by caller after base64 encoding
-		Nonce:        "", // Will be set by caller after base64 encoding
+		Salt:         base64.StdEncoding.EncodeToString(salt),
+		Nonce:        base64.StdEncoding.EncodeToString(nonce),
+		Argon2Params: DefaultArgon2Params(),
+	}
+}
+
+// NewEncryptionMetadataDefaults creates new EncryptionMetadata with empty salt/nonce
+// for cases where the caller will set these values later.
+func NewEncryptionMetadataDefaults() *EncryptionMetadata {
+	return &EncryptionMetadata{
+		Version:      1,
+		Algorithm:    "aes-256-gcm",
+		KDF:          "argon2id",
 		Argon2Params: DefaultArgon2Params(),
 	}
 }

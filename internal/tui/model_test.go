@@ -312,9 +312,14 @@ func TestHandleBackupProfile(t *testing.T) {
 	result, _ := m.handleBackupProfile()
 	updated := result.(Model)
 
-	// Should have status message
-	if updated.statusMsg == "" {
-		t.Error("expected non-empty status message")
+	// Should either show status message (no auth files) or show backup dialog (auth files exist)
+	if updated.statusMsg == "" && updated.backupDialog == nil {
+		t.Error("expected either status message or backup dialog")
+	}
+
+	// If dialog is shown, state should be stateBackupDialog
+	if updated.backupDialog != nil && updated.state != stateBackupDialog {
+		t.Errorf("expected stateBackupDialog when dialog is shown, got %v", updated.state)
 	}
 }
 
