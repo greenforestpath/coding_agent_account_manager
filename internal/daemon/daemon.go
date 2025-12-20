@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -312,13 +313,14 @@ func (d *Daemon) getProfileHealth(provider, profile string) *health.ProfileHealt
 }
 
 // isUnsupportedError checks if an error is an UnsupportedError.
+// Uses errors.As to properly handle wrapped errors.
 func isUnsupportedError(err error, target **refresh.UnsupportedError) bool {
 	if err == nil {
 		return false
 	}
 
-	// Type assertion
-	if ue, ok := err.(*refresh.UnsupportedError); ok {
+	var ue *refresh.UnsupportedError
+	if errors.As(err, &ue) {
 		if target != nil {
 			*target = ue
 		}
