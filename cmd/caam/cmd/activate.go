@@ -158,7 +158,7 @@ func runActivate(cmd *cobra.Command, args []string) error {
 		// Try to resolve as alias or fuzzy match
 		profiles, err := vault.List(tool)
 		if err == nil {
-			profileName = resolveProfileName(tool, profileName, profiles)
+			profileName = resolveProfileName(tool, profileName, profiles, jsonOutput)
 		}
 	} else {
 		// Resolve from project/default first unless user explicitly requested rotation.
@@ -274,7 +274,7 @@ func runActivate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 1: Refresh if needed
-	refreshed := refreshIfNeeded(cmd.Context(), tool, profileName) == nil
+	refreshed := refreshIfNeeded(cmd.Context(), tool, profileName, jsonOutput)
 	output.Refreshed = refreshed
 
 	// Smart auto-backup before switch (based on safety config)
@@ -434,7 +434,10 @@ func resolveActivateProfile(tool string, spmCfg *config.SPMConfig) (profileName 
 	return "", "", fmt.Errorf("no profile specified for %s and no project association/default found\nHint: run 'caam activate %s <profile-name>', 'caam use %s <profile-name>', or 'caam project set %s <profile-name>'", tool, tool, tool, tool)
 }
 
-func refreshIfNeeded(ctx context.Context, provider, profile string) error {
+// refreshIfNeeded refreshes a token if it's close to expiry.
+// Returns true if a refresh was actually performed successfully.
+// The quiet parameter suppresses all output (for JSON mode).
+func refreshIfNeeded(ctx context.Context, provider, profile string, quiet bool) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -447,23 +450,31 @@ func refreshIfNeeded(ctx context.Context, provider, profile string) error {
 	h := getProfileHealth(provider, profile)
 
 	if !refresh.ShouldRefresh(h, 0) {
-		return nil
+		return false
 	}
 
-	fmt.Printf("Refreshing token (%s)... ", health.FormatTimeRemaining(h.TokenExpiresAt))
+	if !quiet {
+		fmt.Printf("Refreshing token (%s)... ", health.FormatTimeRemaining(h.TokenExpiresAt))
+	}
 
 	err := refresh.RefreshProfile(ctx, provider, profile, vault, healthStore)
 	if err != nil {
 		if errors.Is(err, refresh.ErrUnsupported) {
-			fmt.Printf("skipped (%v)\n", err)
-			return nil
+			if !quiet {
+				fmt.Printf("skipped (%v)\n", err)
+			}
+			return false
 		}
-		fmt.Printf("failed (%v)\n", err)
-		return nil // Continue activation even if refresh fails
+		if !quiet {
+			fmt.Printf("failed (%v)\n", err)
+		}
+		return false // Continue activation even if refresh fails
 	}
 
-	fmt.Println("done")
-	return nil
+	if !quiet {
+		fmt.Println("done")
+	}
+	return true
 }
 
 func selectProfileWithRotation(tool string, profiles []string, currentProfile string, spmCfg *config.SPMConfig, db *caamdb.DB) (*rotation.Result, error) {
@@ -489,7 +500,8 @@ func selectProfileWithRotation(tool string, profiles []string, currentProfile st
 
 // resolveProfileName resolves a profile name from user input.
 // It tries: exact match -> alias resolution -> fuzzy match.
-func resolveProfileName(tool, input string, profiles []string) string {
+// The quiet parameter suppresses all output (for JSON mode).
+func resolveProfileName(tool, input string, profiles []string, quiet bool) string {
 	// Check for exact match first
 	for _, p := range profiles {
 		if p == input {
@@ -501,14 +513,16 @@ func resolveProfileName(tool, input string, profiles []string) string {
 	globalCfg, err := config.Load()
 	if err == nil {
 		if resolved := globalCfg.ResolveAliasForProvider(tool, input); resolved != "" {
-			fmt.Printf("Using alias: %s -> %s\n", input, resolved)
+			if !quiet {
+				fmt.Printf("Using alias: %s -> %s\n", input, resolved)
+			}
 			return resolved
 		}
 
 		// Try fuzzy matching
 		matches := globalCfg.FuzzyMatch(tool, input, profiles)
 		if len(matches) > 0 {
-			if matches[0] != input {
+			if !quiet && matches[0] != input {
 				fmt.Printf("Matched: %s -> %s\n", input, matches[0])
 			}
 			return matches[0]
