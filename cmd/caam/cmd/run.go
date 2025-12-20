@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/rotation"
@@ -114,16 +115,27 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	// Initialize health storage
 	healthStore := health.NewStorage("")
 
-	// Build config
-	cfg := wrap.Config{
-		Provider:         tool,
-		Args:             cliArgs,
-		MaxRetries:       maxRetries,
-		CooldownDuration: cooldown,
-		NotifyOnSwitch:   !quiet,
-		Algorithm:        algorithm,
-		Stdout:           os.Stdout,
-		Stderr:           os.Stderr,
+	// Load global config and build wrap config with defaults
+	globalCfg, err := config.Load()
+	if err != nil {
+		// Non-fatal: use defaults if config can't be loaded
+		globalCfg = config.DefaultConfig()
+	}
+
+	// Build config from global settings (includes proper backoff defaults)
+	cfg := wrap.ConfigFromGlobal(globalCfg, tool)
+	cfg.Args = cliArgs
+	cfg.Stdout = os.Stdout
+	cfg.Stderr = os.Stderr
+	cfg.NotifyOnSwitch = !quiet
+	cfg.Algorithm = algorithm
+
+	// Apply CLI flag overrides (only if explicitly set)
+	if cmd.Flags().Changed("max-retries") {
+		cfg.MaxRetries = maxRetries
+	}
+	if cmd.Flags().Changed("cooldown") {
+		cfg.CooldownDuration = cooldown
 	}
 
 	// Get working directory
