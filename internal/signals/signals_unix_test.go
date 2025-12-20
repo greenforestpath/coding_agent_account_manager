@@ -62,3 +62,35 @@ func TestHandler_ShutdownOnTERM(t *testing.T) {
 		t.Fatal("timed out waiting for shutdown event")
 	}
 }
+
+func TestNilHandler(t *testing.T) {
+	var h *Handler
+
+	// All methods should return nil/no-op on nil handler
+	if ch := h.Reload(); ch != nil {
+		t.Error("Reload on nil handler should return nil")
+	}
+	if ch := h.Shutdown(); ch != nil {
+		t.Error("Shutdown on nil handler should return nil")
+	}
+	if ch := h.DumpStats(); ch != nil {
+		t.Error("DumpStats on nil handler should return nil")
+	}
+	if err := h.Close(); err != nil {
+		t.Errorf("Close on nil handler should not error: %v", err)
+	}
+}
+
+func TestHandler_CloseWithNilStop(t *testing.T) {
+	// Create a handler but set stop to nil to test that branch
+	h := &Handler{
+		reload:   make(chan struct{}, 1),
+		shutdown: make(chan os.Signal, 1),
+		dump:     make(chan struct{}, 1),
+		stop:     nil, // nil stop function
+	}
+
+	if err := h.Close(); err != nil {
+		t.Errorf("Close with nil stop should not error: %v", err)
+	}
+}
