@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider/gemini"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/tui"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/version"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/warnings"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -111,6 +113,11 @@ Run 'caam' without arguments to launch the interactive TUI.`,
 			return fmt.Errorf("load config: %w", err)
 		}
 
+		// Show token expiry warnings (skip for certain commands)
+		if shouldShowWarnings(cmd) {
+			showTokenWarnings(cmd.Context())
+		}
+
 		return nil
 	},
 }
@@ -118,6 +125,59 @@ Run 'caam' without arguments to launch the interactive TUI.`,
 // Execute runs the root command.
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// shouldShowWarnings returns true if the current command should display token warnings.
+// Some commands are excluded because they're:
+// - Quick info commands (version, paths)
+// - Already doing validation (validate, doctor)
+// - JSON output mode (warnings would corrupt output)
+func shouldShowWarnings(cmd *cobra.Command) bool {
+	// Skip for commands that don't benefit from warnings
+	skipCommands := map[string]bool{
+		"version":    true, // Quick info command
+		"paths":      true, // Quick info command
+		"validate":   true, // Already doing token validation
+		"doctor":     true, // Already includes validation
+		"help":       true, // Help output only
+		"completion": true, // Shell completion generation
+	}
+
+	if skipCommands[cmd.Name()] {
+		return false
+	}
+
+	// Skip if --json flag is set (would corrupt JSON output)
+	if jsonFlag := cmd.Flags().Lookup("json"); jsonFlag != nil {
+		if jsonFlag.Value.String() == "true" {
+			return false
+		}
+	}
+
+	// Skip if not a terminal (likely being piped/scripted)
+	if !isTerminal() {
+		return false
+	}
+
+	return true
+}
+
+// showTokenWarnings checks for expiring tokens and prints warnings to stderr.
+func showTokenWarnings(ctx context.Context) {
+	if vault == nil || registry == nil {
+		return
+	}
+
+	checker := warnings.NewChecker(vault, registry, profileStore)
+
+	// Only check active profiles for speed
+	warns := checker.CheckActive(ctx)
+
+	// Filter to warning level and above
+	warns = warnings.Filter(warns, warnings.LevelWarning)
+
+	// Print to stderr so it doesn't interfere with command output
+	warnings.PrintToStderr(warns, false)
 }
 
 // isTerminal returns true if stdout is a terminal.
@@ -148,7 +208,7 @@ func getProfileHealth(tool, profileName string) *health.ProfileHealth {
 		expInfo, err = health.ParseClaudeExpiry(vaultPath)
 	case "codex":
 		// Codex auth is in auth.json at vaultPath
-		authPath := vaultPath + "/auth.json"
+		authPath := filepath.Join(vaultPath, "auth.json")
 		expInfo, err = health.ParseCodexExpiry(authPath)
 	case "gemini":
 		expInfo, err = health.ParseGeminiExpiry(vaultPath)
