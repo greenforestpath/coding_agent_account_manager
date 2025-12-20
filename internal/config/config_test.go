@@ -690,16 +690,17 @@ func TestFuzzyMatch(t *testing.T) {
 	}
 
 	tests := []struct {
-		query    string
-		wantLen  int
+		query     string
+		wantLen   int
 		wantFirst string
 	}{
-		// Exact match
+		// Exact profile name match - returns only that profile
 		{"work-account-1", 1, "work-account-1"},
-		// Alias exact match + prefix matches other profiles
-		{"work", 2, "work-account-1"}, // work-account-1 via alias (score 1), work-account-2 via prefix (score 3)
-		{"w", 2, "work-account-1"},    // work-account-1 via alias (score 1), work-account-2 via prefix (score 3)
-		// Alias prefix match + profile prefix match
+		// Exact alias match - short-circuits, returns only the aliased profile
+		// (Aliases are shortcuts; when you type an exact alias, you want that one profile)
+		{"work", 1, "work-account-1"},
+		{"w", 1, "work-account-1"},
+		// Alias prefix match (not exact) + profile prefix match - returns both
 		{"wo", 2, "work-account-1"}, // work-account-1 via alias prefix (score 2), work-account-2 via profile prefix (score 3)
 		// Profile prefix match
 		{"per", 1, "personal-gmail"},
