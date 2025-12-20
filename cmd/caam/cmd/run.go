@@ -154,7 +154,11 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	}
 
 	// Exit with the same code as the wrapped command
+	// Note: os.Exit bypasses defer, so close db explicitly first
 	if result.ExitCode != 0 {
+		if db != nil {
+			db.Close()
+		}
 		os.Exit(result.ExitCode)
 	}
 

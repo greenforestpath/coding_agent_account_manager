@@ -148,12 +148,37 @@ func findCaamPath() (string, error) {
 	return exe, nil
 }
 
+// shellQuote returns a properly shell-quoted string for bash/zsh.
+// This prevents command injection when paths contain spaces or special characters.
+func shellQuote(s string) string {
+	// If the string contains no special characters, return as-is
+	needsQuote := false
+	for _, c := range s {
+		if c == ' ' || c == '\'' || c == '"' || c == '\\' || c == '$' ||
+			c == '`' || c == '!' || c == '*' || c == '?' || c == '[' ||
+			c == ']' || c == '(' || c == ')' || c == '{' || c == '}' ||
+			c == '|' || c == '&' || c == ';' || c == '<' || c == '>' ||
+			c == '\n' || c == '\t' {
+			needsQuote = true
+			break
+		}
+	}
+	if !needsQuote {
+		return s
+	}
+	// Use single quotes and escape any embedded single quotes
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
 func generateBashInit(caamPath string, tools []string, noWrap bool) string {
 	var sb strings.Builder
 
 	sb.WriteString("# caam shell integration\n")
 	sb.WriteString("# Add to your ~/.bashrc or ~/.zshrc:\n")
 	sb.WriteString("#   eval \"$(caam shell init)\"\n\n")
+
+	// Quote the caam path for safe shell interpolation
+	quotedPath := shellQuote(caamPath)
 
 	// Tool wrapper functions
 	if !noWrap {
@@ -163,7 +188,7 @@ func generateBashInit(caamPath string, tools []string, noWrap bool) string {
   %s run %s -- "$@"
 }
 
-`, tool, tool, caamPath, tool))
+`, tool, tool, quotedPath, tool))
 		}
 	}
 
@@ -200,12 +225,36 @@ complete -F _caam_completions caam
 	return sb.String()
 }
 
+// fishQuote returns a properly quoted string for fish shell.
+func fishQuote(s string) string {
+	// If the string contains no special characters, return as-is
+	needsQuote := false
+	for _, c := range s {
+		if c == ' ' || c == '\'' || c == '"' || c == '\\' || c == '$' ||
+			c == '(' || c == ')' || c == '{' || c == '}' || c == '[' ||
+			c == ']' || c == '*' || c == '?' || c == '~' || c == '#' ||
+			c == '|' || c == '&' || c == ';' || c == '<' || c == '>' ||
+			c == '\n' || c == '\t' {
+			needsQuote = true
+			break
+		}
+	}
+	if !needsQuote {
+		return s
+	}
+	// Fish uses single quotes and escapes single quotes with \'
+	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+}
+
 func generateFishInit(caamPath string, tools []string, noWrap bool) string {
 	var sb strings.Builder
 
 	sb.WriteString("# caam shell integration for fish\n")
 	sb.WriteString("# Add to your ~/.config/fish/config.fish:\n")
 	sb.WriteString("#   caam shell init --fish | source\n\n")
+
+	// Quote the caam path for safe shell interpolation
+	quotedPath := fishQuote(caamPath)
 
 	// Tool wrapper functions
 	if !noWrap {
@@ -215,7 +264,7 @@ function %s
   %s run %s -- $argv
 end
 
-`, tool, tool, caamPath, tool))
+`, tool, tool, quotedPath, tool))
 		}
 	}
 
