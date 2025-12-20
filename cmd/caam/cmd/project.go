@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -65,11 +66,25 @@ var projectSetCmd = &cobra.Command{
 	},
 }
 
+// ProjectAssociation represents a project's associations for JSON output.
+type ProjectAssociation struct {
+	Path      string            `json:"path"`
+	Providers map[string]string `json:"providers"`
+}
+
+// ProjectListOutput represents the complete project list JSON output.
+type ProjectListOutput struct {
+	Projects []ProjectAssociation `json:"projects"`
+	Count    int                  `json:"count"`
+}
+
 var projectListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all project associations",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		jsonOutput, _ := cmd.Flags().GetBool("json")
+
 		if projectStore == nil {
 			return fmt.Errorf("project store not initialized")
 		}
@@ -77,6 +92,25 @@ var projectListCmd = &cobra.Command{
 		data, err := projectStore.Load()
 		if err != nil {
 			return err
+		}
+
+		if jsonOutput {
+			output := ProjectListOutput{
+				Projects: make([]ProjectAssociation, 0, len(data.Associations)),
+				Count:    len(data.Associations),
+			}
+			for projectPath, assoc := range data.Associations {
+				output.Projects = append(output.Projects, ProjectAssociation{
+					Path:      projectPath,
+					Providers: assoc,
+				})
+			}
+			jsonData, err := json.MarshalIndent(output, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(jsonData))
+			return nil
 		}
 
 		if len(data.Associations) == 0 {
@@ -111,6 +145,10 @@ var projectListCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func init() {
+	projectListCmd.Flags().Bool("json", false, "output as JSON")
 }
 
 var projectShowCmd = &cobra.Command{

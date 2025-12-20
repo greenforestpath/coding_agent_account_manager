@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -143,7 +144,29 @@ var cooldownListCmd = &cobra.Command{
 	RunE:  runCooldownList,
 }
 
+func init() {
+	cooldownListCmd.Flags().Bool("json", false, "output as JSON")
+}
+
+// CooldownListItem represents a single cooldown entry for JSON output.
+type CooldownListItem struct {
+	Provider      string    `json:"provider"`
+	Profile       string    `json:"profile"`
+	HitAt         time.Time `json:"hit_at"`
+	CooldownUntil time.Time `json:"cooldown_until"`
+	RemainingMins int       `json:"remaining_minutes"`
+	Notes         string    `json:"notes,omitempty"`
+}
+
+// CooldownListOutput represents the complete cooldown list JSON output.
+type CooldownListOutput struct {
+	Cooldowns []CooldownListItem `json:"cooldowns"`
+	Count     int                `json:"count"`
+}
+
 func runCooldownList(cmd *cobra.Command, args []string) error {
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+
 	db, err := caamdb.Open()
 	if err != nil {
 		return err
@@ -155,6 +178,34 @@ func runCooldownList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	if jsonOutput {
+		output := CooldownListOutput{
+			Cooldowns: make([]CooldownListItem, 0, len(events)),
+			Count:     len(events),
+		}
+		for _, ev := range events {
+			remaining := ev.CooldownUntil.Sub(now)
+			if remaining < 0 {
+				remaining = 0
+			}
+			output.Cooldowns = append(output.Cooldowns, CooldownListItem{
+				Provider:      ev.Provider,
+				Profile:       ev.ProfileName,
+				HitAt:         ev.HitAt,
+				CooldownUntil: ev.CooldownUntil,
+				RemainingMins: int(remaining.Minutes()),
+				Notes:         ev.Notes,
+			})
+		}
+		data, err := json.MarshalIndent(output, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+		return nil
+	}
+
 	if len(events) == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "No active cooldowns.")
 		return nil
