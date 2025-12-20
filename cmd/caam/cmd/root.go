@@ -699,10 +699,11 @@ var lsCmd = &cobra.Command{
 	Long: `Lists all profiles stored in the vault with health status.
 
 Examples:
-  caam ls           # List all profiles
-  caam ls claude    # List just Claude profiles
-  caam ls --no-color  # Without colors (for piping)
-  caam ls --json      # Output as JSON`,
+  caam ls              # List all profiles
+  caam ls claude       # List just Claude profiles
+  caam ls --tag work   # List profiles with 'work' tag
+  caam ls --no-color   # Without colors (for piping)
+  caam ls --json       # Output as JSON`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runLs,
 }
@@ -710,12 +711,29 @@ Examples:
 func init() {
 	lsCmd.Flags().Bool("no-color", false, "disable colored output")
 	lsCmd.Flags().Bool("json", false, "output as JSON")
+	lsCmd.Flags().String("tag", "", "filter profiles by tag")
 }
 
 func runLs(cmd *cobra.Command, args []string) error {
 	noColor, _ := cmd.Flags().GetBool("no-color")
 	jsonOutput, _ := cmd.Flags().GetBool("json")
+	tagFilter, _ := cmd.Flags().GetString("tag")
 	formatOpts := health.FormatOptions{NoColor: noColor || !isTerminal()}
+
+	// Helper to check if a profile has the specified tag
+	hasTag := func(tool, profileName string) bool {
+		if tagFilter == "" {
+			return true // No filter, include all
+		}
+		if profileStore == nil {
+			return false // No profile store, can't check tags
+		}
+		prof, err := profileStore.Load(tool, profileName)
+		if err != nil {
+			return false // Profile not in store, no tags
+		}
+		return prof.HasTag(tagFilter)
+	}
 
 	// Collect profiles for JSON output
 	var output lsOutput
@@ -729,6 +747,17 @@ func runLs(cmd *cobra.Command, args []string) error {
 		profiles, err := vault.List(tool)
 		if err != nil {
 			return err
+		}
+
+		// Filter by tag if specified
+		if tagFilter != "" {
+			var filtered []string
+			for _, p := range profiles {
+				if hasTag(tool, p) {
+					filtered = append(filtered, p)
+				}
+			}
+			profiles = filtered
 		}
 
 		if len(profiles) == 0 {
@@ -793,16 +822,37 @@ func runLs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Filter by tag if specified
+	if tagFilter != "" {
+		filtered := make(map[string][]string)
+		for tool, profiles := range allProfiles {
+			var matching []string
+			for _, p := range profiles {
+				if hasTag(tool, p) {
+					matching = append(matching, p)
+				}
+			}
+			if len(matching) > 0 {
+				filtered[tool] = matching
+			}
+		}
+		allProfiles = filtered
+	}
+
 	if len(allProfiles) == 0 {
 		if jsonOutput {
 			output.Profiles = []lsProfile{}
 			output.Count = 0
 			return encodeLsJSON(cmd, output)
 		}
-		fmt.Println("No profiles saved yet.")
-		fmt.Println("\nTo save your first profile:")
-		fmt.Println("  1. Login using the tool's command (codex login, /login in claude)")
-		fmt.Println("  2. Run: caam backup <tool> <profile-name>")
+		if tagFilter != "" {
+			fmt.Printf("No profiles with tag '%s'\n", tagFilter)
+		} else {
+			fmt.Println("No profiles saved yet.")
+			fmt.Println("\nTo save your first profile:")
+			fmt.Println("  1. Login using the tool's command (codex login, /login in claude)")
+			fmt.Println("  2. Run: caam backup <tool> <profile-name>")
+		}
 		return nil
 	}
 
