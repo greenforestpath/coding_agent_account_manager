@@ -1333,6 +1333,20 @@ func (m Model) syncProfilesPanel() {
 	projectDefault := m.projectDefaultForProvider(provider)
 	infos := make([]ProfileInfo, len(profiles))
 	for i, p := range profiles {
+		// Default values for health data
+		healthStatus := health.StatusUnknown
+		errorCount := 0
+		penalty := float64(0)
+
+		// Fetch real health data if available
+		if m.healthStorage != nil {
+			if h, err := m.healthStorage.GetProfile(provider, p.Name); err == nil && h != nil {
+				healthStatus = health.CalculateStatus(h)
+				errorCount = h.ErrorCount1h
+				penalty = h.Penalty
+			}
+		}
+
 		infos[i] = ProfileInfo{
 			Name:           p.Name,
 			Badge:          m.badgeFor(provider, p.Name),
@@ -1341,9 +1355,9 @@ func (m Model) syncProfilesPanel() {
 			LoggedIn:       true,    // TODO: get actual status
 			Locked:         false,   // TODO: get actual lock status
 			IsActive:       p.IsActive,
-			HealthStatus:   health.StatusUnknown, // TODO: get from health store
-			ErrorCount:     0,                    // TODO: get from health store
-			Penalty:        0,                    // TODO: get from health store
+			HealthStatus:   healthStatus,
+			ErrorCount:     errorCount,
+			Penalty:        penalty,
 		}
 	}
 	m.profilesPanel.SetProfiles(infos)
