@@ -3,6 +3,7 @@ package sync
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -135,6 +136,75 @@ func TestMachine(t *testing.T) {
 	}
 }
 
+// TestMachineSetOffline tests the SetOffline method.
+func TestMachineSetOffline(t *testing.T) {
+	m := NewMachine("test", "192.168.1.100")
+
+	// Set to online first
+	m.SetOnline()
+	if m.Status != StatusOnline {
+		t.Errorf("After SetOnline, status = %q, want %q", m.Status, StatusOnline)
+	}
+
+	// Now set offline
+	m.SetOffline()
+	if m.Status != StatusOffline {
+		t.Errorf("After SetOffline, status = %q, want %q", m.Status, StatusOffline)
+	}
+}
+
+// TestMachineRecordSync tests the RecordSync method.
+func TestMachineRecordSync(t *testing.T) {
+	m := NewMachine("test", "192.168.1.100")
+
+	// Set an error first
+	m.SetError("connection refused")
+	if m.Status != StatusError {
+		t.Errorf("After SetError, status = %q, want %q", m.Status, StatusError)
+	}
+	if m.LastError != "connection refused" {
+		t.Errorf("After SetError, LastError = %q, want %q", m.LastError, "connection refused")
+	}
+
+	// Record a successful sync
+	beforeSync := time.Now()
+	m.RecordSync()
+	afterSync := time.Now()
+
+	if m.Status != StatusOnline {
+		t.Errorf("After RecordSync, status = %q, want %q", m.Status, StatusOnline)
+	}
+	if m.LastError != "" {
+		t.Error("After RecordSync, LastError should be cleared")
+	}
+	if m.LastSync.Before(beforeSync) || m.LastSync.After(afterSync) {
+		t.Errorf("RecordSync LastSync = %v, should be between %v and %v", m.LastSync, beforeSync, afterSync)
+	}
+}
+
+// TestValidationError tests the ValidationError.Error method.
+func TestValidationError(t *testing.T) {
+	tests := []struct {
+		field   string
+		message string
+		want    string
+	}{
+		{"name", "machine name is required", "name: machine name is required"},
+		{"address", "machine address is required", "address: machine address is required"},
+		{"port", "invalid port number", "port: invalid port number"},
+		{"", "some message", ": some message"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			err := &ValidationError{Field: tt.field, Message: tt.message}
+			if got := err.Error(); got != tt.want {
+				t.Errorf("ValidationError.Error() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestMachinesEqual tests the MachinesEqual function.
 func TestMachinesEqual(t *testing.T) {
 	m1 := NewMachine("m1", "192.168.1.100")
@@ -222,6 +292,123 @@ func TestSyncPool(t *testing.T) {
 	if err := pool.RemoveMachine("nonexistent"); err == nil {
 		t.Error("Removing non-existent machine should fail")
 	}
+}
+
+// TestSyncPoolAdvanced tests additional SyncPool operations.
+func TestSyncPoolAdvanced(t *testing.T) {
+	pool := NewSyncPool()
+
+	// Add multiple machines
+	m1 := NewMachine("alpha", "192.168.1.1")
+	m2 := NewMachine("beta", "192.168.1.2")
+	m3 := NewMachine("gamma", "192.168.1.3")
+
+	for _, m := range []*Machine{m1, m2, m3} {
+		if err := pool.AddMachine(m); err != nil {
+			t.Fatalf("AddMachine failed: %v", err)
+		}
+	}
+
+	// Test ListMachines returns sorted list
+	t.Run("ListMachines returns sorted", func(t *testing.T) {
+		machines := pool.ListMachines()
+		if len(machines) != 3 {
+			t.Errorf("ListMachines() len = %d, want 3", len(machines))
+		}
+		// Should be sorted alphabetically: alpha, beta, gamma
+		if machines[0].Name != "alpha" || machines[1].Name != "beta" || machines[2].Name != "gamma" {
+			t.Error("ListMachines should return machines sorted by name")
+		}
+	})
+
+	// Test Disable
+	t.Run("Disable", func(t *testing.T) {
+		pool.Enable()
+		if !pool.Enabled {
+			t.Error("Pool should be enabled after Enable()")
+		}
+
+		pool.Disable()
+		if pool.Enabled {
+			t.Error("Pool should be disabled after Disable()")
+		}
+	})
+
+	// Test EnableAutoSync / DisableAutoSync
+	t.Run("AutoSync toggle", func(t *testing.T) {
+		pool.EnableAutoSync()
+		if !pool.AutoSync {
+			t.Error("AutoSync should be true after EnableAutoSync()")
+		}
+
+		pool.DisableAutoSync()
+		if pool.AutoSync {
+			t.Error("AutoSync should be false after DisableAutoSync()")
+		}
+	})
+
+	// Test RecordFullSync
+	t.Run("RecordFullSync", func(t *testing.T) {
+		before := time.Now()
+		pool.RecordFullSync()
+		after := time.Now()
+
+		if pool.LastFullSync.Before(before) || pool.LastFullSync.After(after) {
+			t.Errorf("RecordFullSync timestamp = %v, should be between %v and %v",
+				pool.LastFullSync, before, after)
+		}
+	})
+
+	// Test OnlineMachines
+	t.Run("OnlineMachines", func(t *testing.T) {
+		// Set some machines online
+		m1.SetOnline()
+		m2.SetOffline()
+		m3.SetError("test error")
+
+		online := pool.OnlineMachines()
+		if len(online) != 1 {
+			t.Errorf("OnlineMachines() len = %d, want 1", len(online))
+		}
+		if len(online) > 0 && online[0].Name != "alpha" {
+			t.Error("OnlineMachines should return only online machine")
+		}
+	})
+
+	// Test OfflineMachines (includes offline and error statuses)
+	t.Run("OfflineMachines", func(t *testing.T) {
+		offline := pool.OfflineMachines()
+		if len(offline) != 2 {
+			t.Errorf("OfflineMachines() len = %d, want 2", len(offline))
+		}
+	})
+
+	// Test UpdateMachine
+	t.Run("UpdateMachine success", func(t *testing.T) {
+		m1.Address = "10.0.0.1"
+		if err := pool.UpdateMachine(m1); err != nil {
+			t.Errorf("UpdateMachine failed: %v", err)
+		}
+
+		updated := pool.GetMachine(m1.ID)
+		if updated.Address != "10.0.0.1" {
+			t.Error("UpdateMachine should update the machine")
+		}
+	})
+
+	t.Run("UpdateMachine not found", func(t *testing.T) {
+		unknown := NewMachine("unknown", "1.2.3.4")
+		if err := pool.UpdateMachine(unknown); err == nil {
+			t.Error("UpdateMachine should fail for unknown machine")
+		}
+	})
+
+	t.Run("UpdateMachine invalid", func(t *testing.T) {
+		invalid := &Machine{ID: m1.ID, Name: ""} // Empty name is invalid
+		if err := pool.UpdateMachine(invalid); err == nil {
+			t.Error("UpdateMachine should fail for invalid machine")
+		}
+	})
 }
 
 // TestSyncPoolPersistence tests saving and loading SyncPool.
@@ -544,6 +731,174 @@ func TestSyncStatePersistence(t *testing.T) {
 	if len(loaded.History.Entries) != 1 {
 		t.Errorf("Loaded history len = %d, want 1", len(loaded.History.Entries))
 	}
+}
+
+// TestEnsureCSVFile tests the EnsureCSVFile function.
+func TestEnsureCSVFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set HOME to redirect CSV file location
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// First call should create the file
+	created, err := EnsureCSVFile()
+	if err != nil {
+		t.Fatalf("EnsureCSVFile failed: %v", err)
+	}
+	if !created {
+		t.Error("First call should return created=true")
+	}
+
+	// Verify file exists
+	csvPath := filepath.Join(tmpDir, ".caam", CSVFileName)
+	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
+		t.Error("CSV file should exist after EnsureCSVFile")
+	}
+
+	// Second call should not create
+	created, err = EnsureCSVFile()
+	if err != nil {
+		t.Fatalf("Second EnsureCSVFile failed: %v", err)
+	}
+	if created {
+		t.Error("Second call should return created=false")
+	}
+}
+
+// TestSaveToCSV tests the SaveToCSV function.
+func TestSaveToCSV(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set HOME to redirect CSV file location
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// Create some machines to save
+	machines := []*Machine{
+		NewMachine("server1", "192.168.1.100"),
+		NewMachine("server2", "10.0.0.50"),
+	}
+	machines[0].SSHUser = "admin"
+	machines[0].Port = 2222
+	machines[1].SSHKeyPath = filepath.Join(tmpDir, ".ssh", "id_ed25519")
+
+	// Save to CSV
+	if err := SaveToCSV(machines); err != nil {
+		t.Fatalf("SaveToCSV failed: %v", err)
+	}
+
+	// Verify file exists
+	csvPath := filepath.Join(tmpDir, ".caam", CSVFileName)
+	if _, err := os.Stat(csvPath); os.IsNotExist(err) {
+		t.Error("CSV file should exist after SaveToCSV")
+	}
+
+	// Read back and verify
+	content, err := os.ReadFile(csvPath)
+	if err != nil {
+		t.Fatalf("Failed to read CSV file: %v", err)
+	}
+
+	// Should contain header and machine entries
+	contentStr := string(content)
+	if !containsAll(contentStr, "machine_name,address,ssh_key_path", "server1", "server2") {
+		t.Error("CSV should contain header and machine entries")
+	}
+}
+
+// TestSaveToCSVPreservesComments tests that SaveToCSV preserves existing comments.
+func TestSaveToCSVPreservesComments(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Set HOME to redirect CSV file location
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// Create CSV directory and file with custom comments
+	csvDir := filepath.Join(tmpDir, ".caam")
+	if err := os.MkdirAll(csvDir, 0700); err != nil {
+		t.Fatalf("Failed to create CSV dir: %v", err)
+	}
+
+	customComment := "# My Custom Comment\n# Second line\nmachine_name,address,ssh_key_path\n"
+	csvPath := filepath.Join(csvDir, CSVFileName)
+	if err := os.WriteFile(csvPath, []byte(customComment), 0600); err != nil {
+		t.Fatalf("Failed to write CSV: %v", err)
+	}
+
+	// Save new machines
+	machines := []*Machine{NewMachine("test", "192.168.1.1")}
+	if err := SaveToCSV(machines); err != nil {
+		t.Fatalf("SaveToCSV failed: %v", err)
+	}
+
+	// Read and verify comments are preserved
+	content, err := os.ReadFile(csvPath)
+	if err != nil {
+		t.Fatalf("Failed to read CSV file: %v", err)
+	}
+
+	if !containsAll(string(content), "# My Custom Comment", "# Second line", "test") {
+		t.Error("SaveToCSV should preserve existing comments")
+	}
+}
+
+// TestClearOldQueueEntries tests the ClearOldQueueEntries function.
+func TestClearOldQueueEntries(t *testing.T) {
+	state := NewSyncState(t.TempDir())
+
+	// Add entries with different ages
+	now := time.Now()
+
+	// Add entries directly to manipulate timestamps
+	state.Queue.Entries = []QueueEntry{
+		{Provider: "claude", Profile: "old1", Machine: "m1", AddedAt: now.Add(-48 * time.Hour)},
+		{Provider: "claude", Profile: "old2", Machine: "m2", AddedAt: now.Add(-25 * time.Hour)},
+		{Provider: "claude", Profile: "new1", Machine: "m3", AddedAt: now.Add(-1 * time.Hour)},
+		{Provider: "codex", Profile: "new2", Machine: "m4", AddedAt: now.Add(-30 * time.Minute)},
+	}
+
+	// Clear entries older than 24 hours
+	state.ClearOldQueueEntries(24 * time.Hour)
+
+	// Should have 2 entries left (new1 and new2)
+	if len(state.Queue.Entries) != 2 {
+		t.Errorf("After ClearOldQueueEntries(24h), queue len = %d, want 2", len(state.Queue.Entries))
+	}
+
+	// Verify the right entries remain
+	for _, e := range state.Queue.Entries {
+		if e.Profile == "old1" || e.Profile == "old2" {
+			t.Errorf("Old entry %q should have been removed", e.Profile)
+		}
+	}
+}
+
+// TestClearOldQueueEntriesNilQueue tests ClearOldQueueEntries with nil queue.
+func TestClearOldQueueEntriesNilQueue(t *testing.T) {
+	state := NewSyncState(t.TempDir())
+	state.Queue = nil
+
+	// Should not panic
+	state.ClearOldQueueEntries(24 * time.Hour)
+
+	if state.Queue != nil {
+		t.Error("ClearOldQueueEntries should not create queue when nil")
+	}
+}
+
+// containsAll checks if all substrings are in the string.
+func containsAll(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if !strings.Contains(s, sub) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestMergeDiscoveredMachines tests machine merging.
