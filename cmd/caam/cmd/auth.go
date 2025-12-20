@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -301,7 +302,19 @@ func getProviderDisplayName(id string) string {
 	if ok {
 		return meta.DisplayName
 	}
-	return strings.Title(id)
+	return capitalizeFirst(id)
+}
+
+// capitalizeFirst returns the string with its first letter capitalized.
+// This is a replacement for the deprecated strings.Title function.
+// Uses Unicode-aware rune handling for proper UTF-8 support.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	runes := []rune(s)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 func shortenPath(path string) string {

@@ -41,6 +41,12 @@ type Profile struct {
 	// Examples: "Client X project", "Free tier for testing", "Team shared account"
 	Description string `json:"description,omitempty"`
 
+	// Tags are user-defined labels for categorizing profiles.
+	// Unlike favorites (which are ordered), tags are unordered categories.
+	// Examples: "work", "personal", "project-x", "testing"
+	// Constraints: lowercase, alphanumeric + hyphens, max 32 chars each, max 10 tags.
+	Tags []string `json:"tags,omitempty"`
+
 	// CreatedAt is when this profile was created.
 	CreatedAt time.Time `json:"created_at"`
 
@@ -733,4 +739,140 @@ func (s *Store) Exists(provider, name string) bool {
 	profilePath := s.ProfilePath(provider, name)
 	_, err = os.Stat(profilePath)
 	return err == nil
+}
+
+// Tag constraints
+const (
+	MaxTagLength = 32
+	MaxTagCount  = 10
+)
+
+// ValidateTag checks if a tag conforms to the allowed format.
+// Tags must be lowercase, alphanumeric + hyphens, max 32 characters.
+func ValidateTag(tag string) error {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return fmt.Errorf("tag cannot be empty")
+	}
+	if len(tag) > MaxTagLength {
+		return fmt.Errorf("tag exceeds maximum length of %d characters", MaxTagLength)
+	}
+	for _, r := range tag {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+			return fmt.Errorf("tag %q contains invalid character %q (only lowercase letters, numbers, and hyphens allowed)", tag, string(r))
+		}
+	}
+	return nil
+}
+
+// NormalizeTag normalizes a tag to lowercase and trims whitespace.
+func NormalizeTag(tag string) string {
+	return strings.ToLower(strings.TrimSpace(tag))
+}
+
+// HasTag checks if the profile has a specific tag.
+func (p *Profile) HasTag(tag string) bool {
+	tag = NormalizeTag(tag)
+	for _, t := range p.Tags {
+		if NormalizeTag(t) == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// AddTag adds a tag to the profile if not already present.
+// Returns an error if the tag is invalid or max tags exceeded.
+func (p *Profile) AddTag(tag string) error {
+	tag = NormalizeTag(tag)
+	if err := ValidateTag(tag); err != nil {
+		return err
+	}
+	if p.HasTag(tag) {
+		return nil // Already present, no-op
+	}
+	if len(p.Tags) >= MaxTagCount {
+		return fmt.Errorf("cannot add tag: maximum of %d tags allowed", MaxTagCount)
+	}
+	p.Tags = append(p.Tags, tag)
+	return nil
+}
+
+// RemoveTag removes a tag from the profile.
+// Returns true if the tag was removed, false if it wasn't present.
+func (p *Profile) RemoveTag(tag string) bool {
+	tag = NormalizeTag(tag)
+	for i, t := range p.Tags {
+		if NormalizeTag(t) == tag {
+			p.Tags = append(p.Tags[:i], p.Tags[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// ClearTags removes all tags from the profile.
+func (p *Profile) ClearTags() {
+	p.Tags = nil
+}
+
+// ListByTag returns all profiles for a provider that have a specific tag.
+func (s *Store) ListByTag(provider, tag string) ([]*Profile, error) {
+	profiles, err := s.List(provider)
+	if err != nil {
+		return nil, err
+	}
+
+	tag = NormalizeTag(tag)
+	var filtered []*Profile
+	for _, p := range profiles {
+		if p.HasTag(tag) {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered, nil
+}
+
+// ListAllByTag returns all profiles across all providers that have a specific tag.
+func (s *Store) ListAllByTag(tag string) (map[string][]*Profile, error) {
+	all, err := s.ListAll()
+	if err != nil {
+		return nil, err
+	}
+
+	tag = NormalizeTag(tag)
+	result := make(map[string][]*Profile)
+	for provider, profiles := range all {
+		var filtered []*Profile
+		for _, p := range profiles {
+			if p.HasTag(tag) {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) > 0 {
+			result[provider] = filtered
+		}
+	}
+	return result, nil
+}
+
+// AllTags returns all unique tags used across all profiles for a provider.
+func (s *Store) AllTags(provider string) ([]string, error) {
+	profiles, err := s.List(provider)
+	if err != nil {
+		return nil, err
+	}
+
+	tagSet := make(map[string]struct{})
+	for _, p := range profiles {
+		for _, tag := range p.Tags {
+			tagSet[NormalizeTag(tag)] = struct{}{}
+		}
+	}
+
+	tags := make([]string, 0, len(tagSet))
+	for tag := range tagSet {
+		tags = append(tags, tag)
+	}
+	return tags, nil
 }

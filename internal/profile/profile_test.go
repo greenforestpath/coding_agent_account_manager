@@ -989,3 +989,377 @@ func TestStoreCloneIndependence(t *testing.T) {
 		t.Errorf("clone Description = %q, expected it to be independent of source modification", clone.Description)
 	}
 }
+
+// =============================================================================
+// Tag Tests
+// =============================================================================
+
+func TestValidateTag(t *testing.T) {
+	tests := []struct {
+		tag     string
+		wantErr bool
+	}{
+		{"work", false},
+		{"project-x", false},
+		{"testing123", false},
+		{"my-long-tag-name", false},
+		{"", true},                          // Empty
+		{"   ", true},                        // Whitespace only
+		{"Work", true},                       // Uppercase
+		{"PROJECT", true},                    // All uppercase
+		{"project_x", true},                  // Underscore not allowed
+		{"project.x", true},                  // Period not allowed
+		{"project x", true},                  // Space not allowed
+		{"abcdefghijklmnopqrstuvwxyz0123456789", true}, // Too long (36 chars)
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.tag, func(t *testing.T) {
+			err := ValidateTag(tc.tag)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateTag(%q) error = %v, wantErr %v", tc.tag, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestNormalizeTag(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"work", "work"},
+		{"Work", "work"},
+		{"WORK", "work"},
+		{"  work  ", "work"},
+		{"Project-X", "project-x"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := NormalizeTag(tc.input)
+			if got != tc.expected {
+				t.Errorf("NormalizeTag(%q) = %q, want %q", tc.input, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestProfileHasTag(t *testing.T) {
+	prof := &Profile{
+		Name:     "test",
+		Provider: "claude",
+		Tags:     []string{"work", "project-x"},
+	}
+
+	tests := []struct {
+		tag      string
+		expected bool
+	}{
+		{"work", true},
+		{"project-x", true},
+		{"personal", false},
+		{"Work", true},      // Should match case-insensitively
+		{"PROJECT-X", true}, // Should match case-insensitively
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.tag, func(t *testing.T) {
+			if got := prof.HasTag(tc.tag); got != tc.expected {
+				t.Errorf("HasTag(%q) = %v, want %v", tc.tag, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestProfileAddTag(t *testing.T) {
+	t.Run("add valid tag", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude"}
+		if err := prof.AddTag("work"); err != nil {
+			t.Fatalf("AddTag() error = %v", err)
+		}
+		if !prof.HasTag("work") {
+			t.Error("expected profile to have tag 'work'")
+		}
+	})
+
+	t.Run("add duplicate tag is no-op", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude", Tags: []string{"work"}}
+		if err := prof.AddTag("work"); err != nil {
+			t.Fatalf("AddTag() error = %v", err)
+		}
+		if len(prof.Tags) != 1 {
+			t.Errorf("len(Tags) = %d, want 1 (no duplicate)", len(prof.Tags))
+		}
+	})
+
+	t.Run("uppercase tag gets normalized", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude"}
+		// AddTag normalizes to lowercase before adding, so this should succeed
+		if err := prof.AddTag("WORK"); err != nil {
+			t.Fatalf("AddTag() error = %v", err)
+		}
+		// Should be stored as lowercase
+		if !prof.HasTag("work") {
+			t.Error("expected profile to have tag 'work' (normalized from 'WORK')")
+		}
+		if prof.Tags[0] != "work" {
+			t.Errorf("tag stored as %q, want 'work'", prof.Tags[0])
+		}
+	})
+
+	t.Run("invalid characters fail", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude"}
+		// Underscore is not allowed even after normalization
+		if err := prof.AddTag("invalid_tag"); err == nil {
+			t.Error("expected AddTag() to fail for tag with underscore")
+		}
+	})
+
+	t.Run("max tags limit", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude"}
+		// Add max tags
+		for i := 0; i < MaxTagCount; i++ {
+			if err := prof.AddTag("tag" + string(rune('a'+i))); err != nil {
+				t.Fatalf("AddTag() error = %v at tag %d", err, i)
+			}
+		}
+		// Adding one more should fail
+		if err := prof.AddTag("overflow"); err == nil {
+			t.Error("expected AddTag() to fail when max tags exceeded")
+		}
+	})
+}
+
+func TestProfileRemoveTag(t *testing.T) {
+	t.Run("remove existing tag", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude", Tags: []string{"work", "personal"}}
+		if !prof.RemoveTag("work") {
+			t.Error("expected RemoveTag() to return true for existing tag")
+		}
+		if prof.HasTag("work") {
+			t.Error("expected tag 'work' to be removed")
+		}
+		if len(prof.Tags) != 1 {
+			t.Errorf("len(Tags) = %d, want 1", len(prof.Tags))
+		}
+	})
+
+	t.Run("remove non-existing tag", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude", Tags: []string{"work"}}
+		if prof.RemoveTag("personal") {
+			t.Error("expected RemoveTag() to return false for non-existing tag")
+		}
+		if len(prof.Tags) != 1 {
+			t.Errorf("len(Tags) = %d, want 1", len(prof.Tags))
+		}
+	})
+
+	t.Run("case insensitive removal", func(t *testing.T) {
+		prof := &Profile{Name: "test", Provider: "claude", Tags: []string{"work"}}
+		if !prof.RemoveTag("Work") {
+			t.Error("expected RemoveTag() to work case-insensitively")
+		}
+	})
+}
+
+func TestProfileClearTags(t *testing.T) {
+	prof := &Profile{Name: "test", Provider: "claude", Tags: []string{"work", "personal", "project-x"}}
+	prof.ClearTags()
+	if len(prof.Tags) != 0 {
+		t.Errorf("len(Tags) = %d after ClearTags(), want 0", len(prof.Tags))
+	}
+}
+
+func TestTagsPersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	basePath := filepath.Join(tmpDir, "claude", "with-tags")
+
+	prof := &Profile{
+		Name:      "with-tags",
+		Provider:  "claude",
+		AuthMode:  "oauth",
+		BasePath:  basePath,
+		Tags:      []string{"work", "project-x", "testing"},
+		CreatedAt: time.Now(),
+	}
+
+	// Save
+	if err := prof.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Load and verify Tags persisted
+	metaPath := filepath.Join(basePath, "profile.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("failed to read saved profile: %v", err)
+	}
+
+	var loaded Profile
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("failed to parse saved profile: %v", err)
+	}
+
+	if len(loaded.Tags) != 3 {
+		t.Errorf("len(loaded.Tags) = %d, want 3", len(loaded.Tags))
+	}
+	if !loaded.HasTag("work") {
+		t.Error("expected loaded profile to have tag 'work'")
+	}
+	if !loaded.HasTag("project-x") {
+		t.Error("expected loaded profile to have tag 'project-x'")
+	}
+}
+
+func TestTagsOmitEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	basePath := filepath.Join(tmpDir, "codex", "no-tags")
+
+	prof := &Profile{
+		Name:      "no-tags",
+		Provider:  "codex",
+		AuthMode:  "api-key",
+		BasePath:  basePath,
+		CreatedAt: time.Now(),
+		// Tags intentionally left empty
+	}
+
+	// Save
+	if err := prof.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Read raw JSON and verify "tags" key is not present
+	metaPath := filepath.Join(basePath, "profile.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("failed to read saved profile: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to parse saved profile: %v", err)
+	}
+
+	if _, exists := raw["tags"]; exists {
+		t.Error("expected 'tags' key to be omitted when empty")
+	}
+}
+
+func TestStoreListByTag(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(tmpDir)
+
+	// Create profiles with tags
+	p1, _ := store.Create("claude", "work1", "oauth")
+	p1.Tags = []string{"work", "client-a"}
+	p1.Save()
+
+	p2, _ := store.Create("claude", "work2", "oauth")
+	p2.Tags = []string{"work", "client-b"}
+	p2.Save()
+
+	p3, _ := store.Create("claude", "personal", "oauth")
+	p3.Tags = []string{"personal"}
+	p3.Save()
+
+	// List by "work" tag
+	workProfiles, err := store.ListByTag("claude", "work")
+	if err != nil {
+		t.Fatalf("ListByTag() error = %v", err)
+	}
+	if len(workProfiles) != 2 {
+		t.Errorf("len(workProfiles) = %d, want 2", len(workProfiles))
+	}
+
+	// List by "personal" tag
+	personalProfiles, err := store.ListByTag("claude", "personal")
+	if err != nil {
+		t.Fatalf("ListByTag() error = %v", err)
+	}
+	if len(personalProfiles) != 1 {
+		t.Errorf("len(personalProfiles) = %d, want 1", len(personalProfiles))
+	}
+
+	// List by non-existent tag
+	noProfiles, err := store.ListByTag("claude", "nonexistent")
+	if err != nil {
+		t.Fatalf("ListByTag() error = %v", err)
+	}
+	if len(noProfiles) != 0 {
+		t.Errorf("len(noProfiles) = %d, want 0", len(noProfiles))
+	}
+}
+
+func TestStoreListAllByTag(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(tmpDir)
+
+	// Create profiles across providers
+	p1, _ := store.Create("claude", "work", "oauth")
+	p1.Tags = []string{"work"}
+	p1.Save()
+
+	p2, _ := store.Create("codex", "work", "api-key")
+	p2.Tags = []string{"work"}
+	p2.Save()
+
+	p3, _ := store.Create("claude", "personal", "oauth")
+	p3.Tags = []string{"personal"}
+	p3.Save()
+
+	// List all by "work" tag
+	workProfiles, err := store.ListAllByTag("work")
+	if err != nil {
+		t.Fatalf("ListAllByTag() error = %v", err)
+	}
+	if len(workProfiles) != 2 {
+		t.Errorf("len(workProfiles) = %d, want 2 providers", len(workProfiles))
+	}
+	if len(workProfiles["claude"]) != 1 {
+		t.Errorf("len(workProfiles[claude]) = %d, want 1", len(workProfiles["claude"]))
+	}
+	if len(workProfiles["codex"]) != 1 {
+		t.Errorf("len(workProfiles[codex]) = %d, want 1", len(workProfiles["codex"]))
+	}
+}
+
+func TestStoreAllTags(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewStore(tmpDir)
+
+	// Create profiles with various tags
+	p1, _ := store.Create("claude", "p1", "oauth")
+	p1.Tags = []string{"work", "client-a"}
+	p1.Save()
+
+	p2, _ := store.Create("claude", "p2", "oauth")
+	p2.Tags = []string{"work", "client-b"}
+	p2.Save()
+
+	p3, _ := store.Create("claude", "p3", "oauth")
+	p3.Tags = []string{"personal"}
+	p3.Save()
+
+	tags, err := store.AllTags("claude")
+	if err != nil {
+		t.Fatalf("AllTags() error = %v", err)
+	}
+
+	// Should have 4 unique tags: work, client-a, client-b, personal
+	if len(tags) != 4 {
+		t.Errorf("len(tags) = %d, want 4", len(tags))
+	}
+
+	// Verify expected tags are present
+	tagSet := make(map[string]bool)
+	for _, tag := range tags {
+		tagSet[tag] = true
+	}
+	for _, expected := range []string{"work", "client-a", "client-b", "personal"} {
+		if !tagSet[expected] {
+			t.Errorf("expected tag %q to be present", expected)
+		}
+	}
+}
