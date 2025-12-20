@@ -748,3 +748,262 @@ func TestMatchesAnyPattern(t *testing.T) {
 		}
 	}
 }
+
+// Tests for mergeJSONFile
+func TestMergeJSONFile(t *testing.T) {
+	t.Run("merge new keys into existing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcPath := filepath.Join(tmpDir, "src.json")
+		dstPath := filepath.Join(tmpDir, "dst.json")
+
+		// Create source with new key
+		srcData := `{"newkey": "newvalue", "shared": "source_value"}`
+		if err := os.WriteFile(srcPath, []byte(srcData), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create destination with existing key
+		dstData := `{"existing": "existingvalue", "shared": "dest_value"}`
+		if err := os.WriteFile(dstPath, []byte(dstData), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := mergeJSONFile(srcPath, dstPath); err != nil {
+			t.Fatalf("mergeJSONFile error = %v", err)
+		}
+
+		// Read result
+		result, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var merged map[string]interface{}
+		if err := json.Unmarshal(result, &merged); err != nil {
+			t.Fatal(err)
+		}
+
+		// Should have all keys
+		if merged["existing"] != "existingvalue" {
+			t.Errorf("existing = %v, want existingvalue", merged["existing"])
+		}
+		if merged["newkey"] != "newvalue" {
+			t.Errorf("newkey = %v, want newvalue", merged["newkey"])
+		}
+		// Source should overwrite destination
+		if merged["shared"] != "source_value" {
+			t.Errorf("shared = %v, want source_value", merged["shared"])
+		}
+	})
+
+	t.Run("destination does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcPath := filepath.Join(tmpDir, "src.json")
+		dstPath := filepath.Join(tmpDir, "subdir", "dst.json")
+
+		srcData := `{"key": "value"}`
+		if err := os.WriteFile(srcPath, []byte(srcData), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := mergeJSONFile(srcPath, dstPath); err != nil {
+			t.Fatalf("mergeJSONFile error = %v", err)
+		}
+
+		// Should have created the file
+		result, err := os.ReadFile(dstPath)
+		if err != nil {
+			t.Fatalf("File should be created: %v", err)
+		}
+
+		var merged map[string]interface{}
+		json.Unmarshal(result, &merged)
+		if merged["key"] != "value" {
+			t.Errorf("key = %v, want value", merged["key"])
+		}
+	})
+
+	t.Run("corrupt destination is replaced", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcPath := filepath.Join(tmpDir, "src.json")
+		dstPath := filepath.Join(tmpDir, "dst.json")
+
+		srcData := `{"key": "value"}`
+		if err := os.WriteFile(srcPath, []byte(srcData), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Corrupt destination
+		if err := os.WriteFile(dstPath, []byte("not valid json"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := mergeJSONFile(srcPath, dstPath); err != nil {
+			t.Fatalf("mergeJSONFile error = %v", err)
+		}
+
+		// Should have source values
+		result, _ := os.ReadFile(dstPath)
+		var merged map[string]interface{}
+		json.Unmarshal(result, &merged)
+		if merged["key"] != "value" {
+			t.Errorf("key = %v, want value", merged["key"])
+		}
+	})
+
+	t.Run("source does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcPath := filepath.Join(tmpDir, "nonexistent.json")
+		dstPath := filepath.Join(tmpDir, "dst.json")
+
+		err := mergeJSONFile(srcPath, dstPath)
+		if err == nil {
+			t.Error("Expected error for nonexistent source")
+		}
+	})
+
+	t.Run("source is not valid json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		srcPath := filepath.Join(tmpDir, "src.json")
+		dstPath := filepath.Join(tmpDir, "dst.json")
+
+		if err := os.WriteFile(srcPath, []byte("not valid json"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		err := mergeJSONFile(srcPath, dstPath)
+		if err == nil {
+			t.Error("Expected error for invalid source JSON")
+		}
+	})
+}
+
+// Tests for copyDirectory
+func TestCopyDirectory(t *testing.T) {
+	t.Run("copies files recursively", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := filepath.Join(t.TempDir(), "dest")
+
+		// Create source structure
+		subDir := filepath.Join(srcDir, "subdir")
+		if err := os.MkdirAll(subDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("content1"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(subDir, "file2.txt"), []byte("content2"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := copyDirectory(srcDir, dstDir); err != nil {
+			t.Fatalf("copyDirectory error = %v", err)
+		}
+
+		// Verify files
+		content1, err := os.ReadFile(filepath.Join(dstDir, "file1.txt"))
+		if err != nil || string(content1) != "content1" {
+			t.Errorf("file1.txt content = %q, want content1", content1)
+		}
+
+		content2, err := os.ReadFile(filepath.Join(dstDir, "subdir", "file2.txt"))
+		if err != nil || string(content2) != "content2" {
+			t.Errorf("subdir/file2.txt content = %q, want content2", content2)
+		}
+	})
+
+	t.Run("creates destination if not exists", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := filepath.Join(t.TempDir(), "nested", "deep", "dest")
+
+		if err := os.WriteFile(filepath.Join(srcDir, "file.txt"), []byte("data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := copyDirectory(srcDir, dstDir); err != nil {
+			t.Fatalf("copyDirectory error = %v", err)
+		}
+
+		if _, err := os.Stat(filepath.Join(dstDir, "file.txt")); os.IsNotExist(err) {
+			t.Error("file.txt should exist in destination")
+		}
+	})
+
+	t.Run("source does not exist", func(t *testing.T) {
+		srcDir := "/nonexistent/source"
+		dstDir := t.TempDir()
+
+		err := copyDirectory(srcDir, dstDir)
+		if err == nil {
+			t.Error("Expected error for nonexistent source")
+		}
+	})
+
+	t.Run("empty source directory", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := filepath.Join(t.TempDir(), "dest")
+
+		if err := copyDirectory(srcDir, dstDir); err != nil {
+			t.Fatalf("copyDirectory error = %v", err)
+		}
+
+		// Destination should exist but be empty
+		entries, _ := os.ReadDir(dstDir)
+		if len(entries) != 0 {
+			t.Errorf("Destination should be empty, got %d entries", len(entries))
+		}
+	})
+}
+
+// Tests for import with wrong password
+func TestVaultImporter_Import_WrongPassword(t *testing.T) {
+	tempDir := t.TempDir()
+	vaultDir := filepath.Join(tempDir, "vault")
+	outputDir := filepath.Join(tempDir, "output")
+	importVaultDir := filepath.Join(tempDir, "import_vault")
+
+	// Create vault with profile
+	profileDir := filepath.Join(vaultDir, "claude", "test@example.com")
+	if err := os.MkdirAll(profileDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	authData := map[string]interface{}{
+		"oauthToken": map[string]interface{}{
+			"access_token": "secret_token",
+			"expiry":       time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+		},
+	}
+	authJSON, _ := json.Marshal(authData)
+	if err := os.WriteFile(filepath.Join(profileDir, ".claude.json"), authJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Export with encryption
+	exporter := &VaultExporter{VaultPath: vaultDir, DataPath: tempDir}
+	exportOpts := DefaultExportOptions()
+	exportOpts.OutputDir = outputDir
+	exportOpts.Encrypt = true
+	exportOpts.Password = "correct_password"
+
+	exportResult, err := exporter.Export(exportOpts)
+	if err != nil {
+		t.Fatalf("encrypted export failed: %v", err)
+	}
+
+	// Try import with wrong password
+	if err := os.MkdirAll(importVaultDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	importer := &VaultImporter{BundlePath: exportResult.OutputPath}
+	importOpts := DefaultImportOptions()
+	importOpts.VaultPath = importVaultDir
+	importOpts.Password = "wrong_password"
+
+	_, err = importer.Import(importOpts)
+	if err == nil {
+		t.Error("Import should fail with wrong password")
+	}
+}

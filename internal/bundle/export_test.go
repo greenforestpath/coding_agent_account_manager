@@ -507,3 +507,451 @@ func TestCreateZipFromDir(t *testing.T) {
 		t.Error("subdir/file2.txt should be in zip")
 	}
 }
+
+// Tests for collectProjectFiles
+func TestCollectProjectFiles(t *testing.T) {
+	t.Run("no projects path", func(t *testing.T) {
+		exporter := &VaultExporter{
+			ProjectsPath: "",
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectProjectFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectProjectFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Projects.Included {
+			t.Error("Projects should not be included")
+		}
+	})
+
+	t.Run("projects file does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		exporter := &VaultExporter{
+			ProjectsPath: filepath.Join(tmpDir, "nonexistent.json"),
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectProjectFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectProjectFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Projects.Included {
+			t.Error("Projects should not be included")
+		}
+	})
+
+	t.Run("projects file exists", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		projectsPath := filepath.Join(tmpDir, "projects.json")
+
+		projectsData := `{"/path/to/project1": {"claude": "work"}, "/path/to/project2": {"codex": "personal"}}`
+		if err := os.WriteFile(projectsPath, []byte(projectsData), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		exporter := &VaultExporter{
+			ProjectsPath: projectsPath,
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectProjectFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectProjectFiles error = %v", err)
+		}
+
+		if len(files) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(files))
+		}
+		if !manifest.Contents.Projects.Included {
+			t.Error("Projects should be included")
+		}
+		if manifest.Contents.Projects.Count != 2 {
+			t.Errorf("Count = %d, want 2", manifest.Contents.Projects.Count)
+		}
+	})
+}
+
+// Tests for collectHealthFiles
+func TestCollectHealthFiles(t *testing.T) {
+	t.Run("no health path", func(t *testing.T) {
+		exporter := &VaultExporter{
+			HealthPath: "",
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectHealthFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectHealthFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Health.Included {
+			t.Error("Health should not be included")
+		}
+	})
+
+	t.Run("health path does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		exporter := &VaultExporter{
+			HealthPath: filepath.Join(tmpDir, "nonexistent"),
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectHealthFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectHealthFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Health.Included {
+			t.Error("Health should not be included")
+		}
+	})
+
+	t.Run("health directory with files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		healthPath := filepath.Join(tmpDir, "health")
+
+		// Create health directory with some files
+		if err := os.MkdirAll(healthPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(healthPath, "health.json"), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		exporter := &VaultExporter{
+			HealthPath: healthPath,
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectHealthFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectHealthFiles error = %v", err)
+		}
+
+		if len(files) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(files))
+		}
+		if !manifest.Contents.Health.Included {
+			t.Error("Health should be included")
+		}
+	})
+
+	t.Run("empty health directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		healthPath := filepath.Join(tmpDir, "health")
+
+		if err := os.MkdirAll(healthPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		exporter := &VaultExporter{
+			HealthPath: healthPath,
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectHealthFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectHealthFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Health.Included {
+			t.Error("Health should not be included for empty dir")
+		}
+	})
+}
+
+// Tests for collectDatabaseFiles
+func TestCollectDatabaseFiles(t *testing.T) {
+	t.Run("no database path", func(t *testing.T) {
+		exporter := &VaultExporter{
+			DatabasePath: "",
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectDatabaseFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectDatabaseFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Database.Included {
+			t.Error("Database should not be included")
+		}
+	})
+
+	t.Run("database does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		exporter := &VaultExporter{
+			DatabasePath: filepath.Join(tmpDir, "nonexistent.db"),
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectDatabaseFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectDatabaseFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.Database.Included {
+			t.Error("Database should not be included")
+		}
+	})
+
+	t.Run("database exists", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "caam.db")
+
+		if err := os.WriteFile(dbPath, []byte("sqlite db data"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		exporter := &VaultExporter{
+			DatabasePath: dbPath,
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectDatabaseFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectDatabaseFiles error = %v", err)
+		}
+
+		if len(files) != 1 {
+			t.Errorf("Expected 1 file, got %d", len(files))
+		}
+		if !manifest.Contents.Database.Included {
+			t.Error("Database should be included")
+		}
+		if manifest.Contents.Database.Path != "caam.db" {
+			t.Errorf("Path = %q, want caam.db", manifest.Contents.Database.Path)
+		}
+	})
+}
+
+// Tests for collectSyncFiles
+func TestCollectSyncFiles(t *testing.T) {
+	t.Run("no sync path", func(t *testing.T) {
+		exporter := &VaultExporter{
+			SyncPath: "",
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectSyncFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectSyncFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.SyncConfig.Included {
+			t.Error("SyncConfig should not be included")
+		}
+	})
+
+	t.Run("sync path does not exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		exporter := &VaultExporter{
+			SyncPath: filepath.Join(tmpDir, "nonexistent"),
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectSyncFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectSyncFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.SyncConfig.Included {
+			t.Error("SyncConfig should not be included")
+		}
+	})
+
+	t.Run("sync directory with files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		syncPath := filepath.Join(tmpDir, "sync")
+
+		// Create sync directory with config files
+		if err := os.MkdirAll(syncPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(syncPath, "pool.json"), []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(syncPath, "machines.json"), []byte("[]"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		exporter := &VaultExporter{
+			SyncPath: syncPath,
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectSyncFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectSyncFiles error = %v", err)
+		}
+
+		if len(files) != 2 {
+			t.Errorf("Expected 2 files, got %d", len(files))
+		}
+		if !manifest.Contents.SyncConfig.Included {
+			t.Error("SyncConfig should be included")
+		}
+	})
+
+	t.Run("empty sync directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		syncPath := filepath.Join(tmpDir, "sync")
+
+		if err := os.MkdirAll(syncPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		exporter := &VaultExporter{
+			SyncPath: syncPath,
+		}
+		manifest := NewManifest()
+
+		files, err := exporter.collectSyncFiles(manifest)
+		if err != nil {
+			t.Fatalf("collectSyncFiles error = %v", err)
+		}
+
+		if len(files) != 0 {
+			t.Errorf("Expected no files, got %d", len(files))
+		}
+		if manifest.Contents.SyncConfig.Included {
+			t.Error("SyncConfig should not be included for empty dir")
+		}
+	})
+}
+
+// Tests for Export with optional content
+func TestVaultExporter_Export_WithOptionalContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	vaultDir := filepath.Join(tmpDir, "vault")
+	outputDir := filepath.Join(tmpDir, "output")
+
+	// Create vault with profile
+	profileDir := filepath.Join(vaultDir, "claude", "test@example.com")
+	if err := os.MkdirAll(profileDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "auth.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create projects file
+	projectsPath := filepath.Join(tmpDir, "projects.json")
+	if err := os.WriteFile(projectsPath, []byte(`{"/proj1": {}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create health directory
+	healthPath := filepath.Join(tmpDir, "health")
+	if err := os.MkdirAll(healthPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(healthPath, "health.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create database
+	dbPath := filepath.Join(tmpDir, "caam.db")
+	if err := os.WriteFile(dbPath, []byte("db data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create sync directory
+	syncPath := filepath.Join(tmpDir, "sync")
+	if err := os.MkdirAll(syncPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(syncPath, "pool.json"), []byte("{}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	exporter := &VaultExporter{
+		VaultPath:    vaultDir,
+		DataPath:     tmpDir,
+		ProjectsPath: projectsPath,
+		HealthPath:   healthPath,
+		DatabasePath: dbPath,
+		SyncPath:     syncPath,
+	}
+
+	opts := DefaultExportOptions()
+	opts.OutputDir = outputDir
+	opts.IncludeProjects = true
+	opts.IncludeHealth = true
+	opts.IncludeDatabase = true
+	opts.IncludeSyncConfig = true
+
+	result, err := exporter.Export(opts)
+	if err != nil {
+		t.Fatalf("Export failed: %v", err)
+	}
+
+	// Verify manifest includes all content
+	if !result.Manifest.Contents.Projects.Included {
+		t.Error("Projects should be included")
+	}
+	if !result.Manifest.Contents.Health.Included {
+		t.Error("Health should be included")
+	}
+	if !result.Manifest.Contents.Database.Included {
+		t.Error("Database should be included")
+	}
+	if !result.Manifest.Contents.SyncConfig.Included {
+		t.Error("SyncConfig should be included")
+	}
+
+	// Verify files are in the zip
+	reader, err := zip.OpenReader(result.OutputPath)
+	if err != nil {
+		t.Fatalf("Failed to open zip: %v", err)
+	}
+	defer reader.Close()
+
+	fileNames := make(map[string]bool)
+	for _, f := range reader.File {
+		fileNames[f.Name] = true
+	}
+
+	if !fileNames["projects.json"] {
+		t.Error("projects.json should be in bundle")
+	}
+	if !fileNames["health/health.json"] {
+		t.Error("health/health.json should be in bundle")
+	}
+	if !fileNames["caam.db"] {
+		t.Error("caam.db should be in bundle")
+	}
+	if !fileNames["sync/pool.json"] {
+		t.Error("sync/pool.json should be in bundle")
+	}
+}

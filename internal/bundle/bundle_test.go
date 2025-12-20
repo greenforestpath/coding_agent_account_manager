@@ -704,3 +704,479 @@ func TestVerificationResultSummary(t *testing.T) {
 		})
 	}
 }
+
+// Tests for GenerateRandomBytes
+func TestGenerateRandomBytes(t *testing.T) {
+	t.Run("generates correct length", func(t *testing.T) {
+		for _, size := range []int{1, 16, 32, 64, 128} {
+			bytes, err := GenerateRandomBytes(size)
+			if err != nil {
+				t.Fatalf("GenerateRandomBytes(%d) error = %v", size, err)
+			}
+			if len(bytes) != size {
+				t.Errorf("GenerateRandomBytes(%d) len = %d, want %d", size, len(bytes), size)
+			}
+		}
+	})
+
+	t.Run("generates different values", func(t *testing.T) {
+		bytes1, _ := GenerateRandomBytes(32)
+		bytes2, _ := GenerateRandomBytes(32)
+
+		// Two random 32-byte slices should be different
+		same := true
+		for i := range bytes1 {
+			if bytes1[i] != bytes2[i] {
+				same = false
+				break
+			}
+		}
+		if same {
+			t.Error("Two calls to GenerateRandomBytes produced identical results")
+		}
+	})
+
+	t.Run("zero length", func(t *testing.T) {
+		bytes, err := GenerateRandomBytes(0)
+		if err != nil {
+			t.Fatalf("GenerateRandomBytes(0) error = %v", err)
+		}
+		if len(bytes) != 0 {
+			t.Errorf("GenerateRandomBytes(0) len = %d, want 0", len(bytes))
+		}
+	})
+}
+
+// Tests for SecureWipe
+func TestSecureWipe(t *testing.T) {
+	t.Run("wipes data", func(t *testing.T) {
+		data := []byte("sensitive data that should be wiped")
+		original := make([]byte, len(data))
+		copy(original, data)
+
+		SecureWipe(data)
+
+		// All bytes should now be zero
+		for i, b := range data {
+			if b != 0 {
+				t.Errorf("byte at index %d = %d, want 0", i, b)
+			}
+		}
+	})
+
+	t.Run("handles empty slice", func(t *testing.T) {
+		data := []byte{}
+		SecureWipe(data) // Should not panic
+	})
+
+	t.Run("handles nil slice", func(t *testing.T) {
+		var data []byte
+		SecureWipe(data) // Should not panic
+	})
+}
+
+// Tests for NewEncryptionMetadata
+func TestNewEncryptionMetadata(t *testing.T) {
+	salt := []byte("testsalt12345678testsalt12345678") // 32 bytes
+	nonce := []byte("testnonce123")                    // 12 bytes
+
+	meta := NewEncryptionMetadata(salt, nonce)
+
+	if meta.Version != 1 {
+		t.Errorf("Version = %d, want 1", meta.Version)
+	}
+
+	if meta.Algorithm != "aes-256-gcm" {
+		t.Errorf("Algorithm = %q, want %q", meta.Algorithm, "aes-256-gcm")
+	}
+
+	if meta.KDF != "argon2id" {
+		t.Errorf("KDF = %q, want %q", meta.KDF, "argon2id")
+	}
+
+	if meta.Salt == "" {
+		t.Error("Salt should be set")
+	}
+
+	if meta.Nonce == "" {
+		t.Error("Nonce should be set")
+	}
+
+	if meta.Argon2Params == nil {
+		t.Error("Argon2Params should be set")
+	}
+}
+
+// Tests for NewEncryptionMetadataDefaults
+func TestNewEncryptionMetadataDefaults(t *testing.T) {
+	meta := NewEncryptionMetadataDefaults()
+
+	if meta.Version != 1 {
+		t.Errorf("Version = %d, want 1", meta.Version)
+	}
+
+	if meta.Algorithm != "aes-256-gcm" {
+		t.Errorf("Algorithm = %q, want %q", meta.Algorithm, "aes-256-gcm")
+	}
+
+	if meta.KDF != "argon2id" {
+		t.Errorf("KDF = %q, want %q", meta.KDF, "argon2id")
+	}
+
+	// Salt and Nonce should be empty for defaults
+	if meta.Salt != "" {
+		t.Errorf("Salt = %q, want empty", meta.Salt)
+	}
+
+	if meta.Nonce != "" {
+		t.Errorf("Nonce = %q, want empty", meta.Nonce)
+	}
+
+	if meta.Argon2Params == nil {
+		t.Error("Argon2Params should be set")
+	}
+}
+
+// Tests for ValidationError.Error()
+func TestValidationErrorError(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     *ValidationError
+		want    string
+	}{
+		{
+			name: "with field",
+			err: &ValidationError{
+				Field:   "schema_version",
+				Message: "must be >= 1",
+			},
+			want: "schema_version: must be >= 1",
+		},
+		{
+			name: "without field",
+			err: &ValidationError{
+				Message: "manifest is nil",
+			},
+			want: "manifest is nil",
+		},
+		{
+			name: "empty field",
+			err: &ValidationError{
+				Field:   "",
+				Message: "some error",
+			},
+			want: "some error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.err.Error()
+			if got != tt.want {
+				t.Errorf("Error() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Tests for validateArgon2Params edge cases
+func TestValidateArgon2ParamsEdgeCases(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  *Argon2Params
+		wantErr bool
+	}{
+		{
+			name:    "nil params is allowed",
+			params:  nil,
+			wantErr: false, // Nil params is accepted; only validated when non-nil
+		},
+		{
+			name: "zero time",
+			params: &Argon2Params{
+				Time:    0,
+				Memory:  64 * 1024,
+				Threads: 4,
+				KeyLen:  32,
+			},
+			wantErr: true,
+		},
+		{
+			name: "memory too low",
+			params: &Argon2Params{
+				Time:    3,
+				Memory:  512, // Less than 1024 (1 MiB)
+				Threads: 4,
+				KeyLen:  32,
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero threads",
+			params: &Argon2Params{
+				Time:    3,
+				Memory:  64 * 1024,
+				Threads: 0,
+				KeyLen:  32,
+			},
+			wantErr: true,
+		},
+		{
+			name: "key length too small",
+			params: &Argon2Params{
+				Time:    3,
+				Memory:  64 * 1024,
+				Threads: 4,
+				KeyLen:  8, // Less than 16
+			},
+			wantErr: true,
+		},
+		{
+			name: "key length too large",
+			params: &Argon2Params{
+				Time:    3,
+				Memory:  64 * 1024,
+				Threads: 4,
+				KeyLen:  128, // More than 64
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid min key length",
+			params: &Argon2Params{
+				Time:    3,
+				Memory:  64 * 1024,
+				Threads: 4,
+				KeyLen:  16, // Minimum valid
+			},
+			wantErr: false,
+		},
+		{
+			name:    "valid default params",
+			params:  DefaultArgon2Params(),
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create metadata with the params
+			meta := &EncryptionMetadata{
+				Version:      1,
+				Algorithm:    "aes-256-gcm",
+				KDF:          "argon2id",
+				Salt:         "dGVzdHNhbHQ=",
+				Nonce:        "dGVzdG5vbmNl",
+				Argon2Params: tt.params,
+			}
+
+			err := ValidateEncryptionMetadata(meta)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateEncryptionMetadata() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Tests for AddChecksum edge cases
+func TestAddChecksumEdgeCases(t *testing.T) {
+	t.Run("nil files map", func(t *testing.T) {
+		m := &ManifestV1{}
+		m.Checksums.Files = nil
+
+		m.AddChecksum("test.txt", "abc123")
+
+		if m.Checksums.Files == nil {
+			t.Error("Files map should be initialized")
+		}
+
+		if m.Checksums.Files["test.txt"] != "abc123" {
+			t.Error("Checksum should be stored")
+		}
+	})
+
+	t.Run("overwrite existing checksum", func(t *testing.T) {
+		m := NewManifest()
+		m.AddChecksum("test.txt", "old_checksum")
+		m.AddChecksum("test.txt", "new_checksum")
+
+		if m.Checksums.Files["test.txt"] != "new_checksum" {
+			t.Errorf("Checksum = %q, want %q", m.Checksums.Files["test.txt"], "new_checksum")
+		}
+	})
+}
+
+// Tests for DecryptBundle edge cases
+func TestDecryptBundleEdgeCases(t *testing.T) {
+	t.Run("empty password", func(t *testing.T) {
+		meta := &EncryptionMetadata{
+			Version:      1,
+			Algorithm:    "aes-256-gcm",
+			KDF:          "argon2id",
+			Salt:         "dGVzdHNhbHQ=",
+			Nonce:        "dGVzdG5vbmNl",
+			Argon2Params: DefaultArgon2Params(),
+		}
+
+		_, err := DecryptBundle([]byte("data"), meta, "")
+		if err == nil {
+			t.Error("DecryptBundle should fail with empty password")
+		}
+	})
+
+	t.Run("invalid base64 salt", func(t *testing.T) {
+		meta := &EncryptionMetadata{
+			Version:      1,
+			Algorithm:    "aes-256-gcm",
+			KDF:          "argon2id",
+			Salt:         "!!!invalid-base64!!!",
+			Nonce:        "dGVzdG5vbmNl",
+			Argon2Params: DefaultArgon2Params(),
+		}
+
+		_, err := DecryptBundle([]byte("data"), meta, "password")
+		if err == nil {
+			t.Error("DecryptBundle should fail with invalid base64 salt")
+		}
+	})
+
+	t.Run("invalid base64 nonce", func(t *testing.T) {
+		meta := &EncryptionMetadata{
+			Version:      1,
+			Algorithm:    "aes-256-gcm",
+			KDF:          "argon2id",
+			Salt:         "dGVzdHNhbHQ=",
+			Nonce:        "!!!invalid-base64!!!",
+			Argon2Params: DefaultArgon2Params(),
+		}
+
+		_, err := DecryptBundle([]byte("data"), meta, "password")
+		if err == nil {
+			t.Error("DecryptBundle should fail with invalid base64 nonce")
+		}
+	})
+
+	t.Run("nil argon2 params uses defaults", func(t *testing.T) {
+		// First encrypt with known params
+		plainData := []byte("test data")
+		password := "testpass123"
+
+		ciphertext, origMeta, err := EncryptBundle(plainData, password)
+		if err != nil {
+			t.Fatalf("EncryptBundle error = %v", err)
+		}
+
+		// Decrypt with nil Argon2Params (should use defaults)
+		metaWithNilParams := &EncryptionMetadata{
+			Version:      1,
+			Algorithm:    "aes-256-gcm",
+			KDF:          "argon2id",
+			Salt:         origMeta.Salt,
+			Nonce:        origMeta.Nonce,
+			Argon2Params: nil,
+		}
+
+		decrypted, err := DecryptBundle(ciphertext, metaWithNilParams, password)
+		if err != nil {
+			t.Fatalf("DecryptBundle error = %v", err)
+		}
+
+		if string(decrypted) != string(plainData) {
+			t.Errorf("Decrypted = %q, want %q", decrypted, plainData)
+		}
+	})
+}
+
+// Tests for LoadManifest edge cases
+func TestLoadManifestEdgeCases(t *testing.T) {
+	t.Run("nonexistent directory", func(t *testing.T) {
+		_, err := LoadManifest("/nonexistent/path")
+		if err == nil {
+			t.Error("LoadManifest should fail for nonexistent path")
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		manifestPath := filepath.Join(tmpDir, ManifestFileName)
+
+		if err := os.WriteFile(manifestPath, []byte("not valid json"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := LoadManifest(tmpDir)
+		if err == nil {
+			t.Error("LoadManifest should fail for invalid JSON")
+		}
+	})
+}
+
+// Tests for SaveManifest edge cases
+func TestSaveManifestEdgeCases(t *testing.T) {
+	t.Run("creates directory if missing", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		nestedDir := filepath.Join(tmpDir, "nested", "path")
+
+		m := NewManifest()
+		m.Source.Hostname = "testhost"
+
+		if err := SaveManifest(nestedDir, m); err != nil {
+			t.Errorf("SaveManifest error = %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(filepath.Join(nestedDir, ManifestFileName)); os.IsNotExist(err) {
+			t.Error("Manifest file should exist")
+		}
+	})
+
+	t.Run("invalid manifest fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		m := &ManifestV1{} // Invalid - missing required fields
+
+		if err := SaveManifest(tmpDir, m); err == nil {
+			t.Error("SaveManifest should fail for invalid manifest")
+		}
+	})
+}
+
+// Tests for IsCompatibleVersion edge cases
+func TestIsCompatibleVersionEdgeCases(t *testing.T) {
+	t.Run("negative version", func(t *testing.T) {
+		m := NewManifest()
+		m.SchemaVersion = -1
+
+		err := IsCompatibleVersion(m)
+		if err == nil {
+			t.Error("IsCompatibleVersion should fail for negative version")
+		}
+	})
+}
+
+// Tests for newHasher edge cases
+func TestNewHasherEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		algorithm ChecksumAlgorithm
+		wantErr   bool
+	}{
+		{"sha256 constant", AlgorithmSHA256, false},
+		{"sha256 string", ChecksumAlgorithm("sha256"), false},
+		{"sha512 supported", AlgorithmSHA512, false},
+		{"empty defaults to sha256", ChecksumAlgorithm(""), false},
+		{"SHA256 uppercase rejected", ChecksumAlgorithm("SHA256"), true}, // Case sensitive
+		{"md5 unsupported", ChecksumAlgorithm("md5"), true},
+		{"unknown algorithm", ChecksumAlgorithm("blake2b"), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Test via ComputeDataChecksum since newHasher is internal
+			_, err := ComputeDataChecksum([]byte("test"), tt.algorithm)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ComputeDataChecksum with algorithm %q error = %v, wantErr %v", tt.algorithm, err, tt.wantErr)
+			}
+		})
+	}
+}

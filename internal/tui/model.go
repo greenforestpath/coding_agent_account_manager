@@ -2,6 +2,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/refresh"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/signals"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
 	"github.com/charmbracelet/bubbles/key"
@@ -42,6 +44,7 @@ type confirmAction int
 const (
 	confirmNone confirmAction = iota
 	confirmDelete
+	confirmActivate
 )
 
 // Profile represents a saved auth profile for display.
@@ -95,6 +98,9 @@ type Model struct {
 	projectStore   *project.Store
 	projectContext *project.Resolved
 
+	// Health storage for profile health data
+	healthStorage *health.Storage
+
 	// Confirmation state
 	pendingAction confirmAction
 	searchQuery   string
@@ -141,6 +147,7 @@ func NewWithProviders(providers []string) Model {
 		runtime:        defaultRuntime,
 		cwd:            cwd,
 		projectStore:   project.NewStore(""),
+		healthStorage:  health.NewStorage(""),
 	}
 }
 
@@ -352,6 +359,13 @@ type errMsg struct {
 	err error
 }
 
+// refreshResultMsg is sent when a token refresh operation completes.
+type refreshResultMsg struct {
+	provider string
+	profile  string
+	err      error
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -516,6 +530,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update profiles panel with current provider's profiles
 		m.syncProfilesPanel()
 		return m, nil
+
+	case profilesRefreshedMsg:
+		if msg.err != nil {
+			m.showError(msg.err, "Refresh profiles")
+			return m, nil
+		}
+		m.profiles = msg.profiles
+		// Restore selection intelligently based on context
+		m.restoreSelection(msg.ctx)
+		// Update provider panel counts
+		if m.providerPanel != nil {
+			counts := make(map[string]int)
+			for provider, profiles := range m.profiles {
+				counts[provider] = len(profiles)
+			}
+			m.providerPanel.SetProfileCounts(counts)
+		}
+		// Update profiles panel with current provider's profiles
+		m.syncProfilesPanel()
+		return m, nil
+
+	case refreshResultMsg:
+		if msg.err != nil {
+			m.showError(msg.err, "Refresh")
+			return m, nil
+		}
+		m.showRefreshSuccess(msg.profile, time.Time{}) // TODO: pass actual expiry time
+		// Refresh profiles to update any changed state
+		ctx := refreshContext{
+			provider:        msg.provider,
+			selectedProfile: msg.profile,
+		}
+		return m, m.refreshProfiles(ctx)
 
 	case errMsg:
 		m.err = msg.err
@@ -799,7 +846,9 @@ func (m *Model) applySearchFilter() {
 	m.statusMsg = fmt.Sprintf("/%s (%d matches)", m.searchQuery, len(filtered))
 }
 
-// handleActivateProfile activates the selected profile.
+// handleActivateProfile initiates profile activation with confirmation.
+// Confirmation is required because activation replaces current auth files,
+// which could be lost if not backed up.
 func (m Model) handleActivateProfile() (tea.Model, tea.Cmd) {
 	profiles := m.currentProfiles()
 	if m.selected < 0 || m.selected >= len(profiles) {
@@ -807,7 +856,17 @@ func (m Model) handleActivateProfile() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	profile := profiles[m.selected]
-	m.statusMsg = fmt.Sprintf("Activating %s... (not yet implemented)", profile.Name)
+
+	// Check if this profile is already active (no-op)
+	if profile.IsActive {
+		m.statusMsg = fmt.Sprintf("'%s' is already active", profile.Name)
+		return m, nil
+	}
+
+	// Enter confirmation state
+	m.state = stateConfirm
+	m.pendingAction = confirmActivate
+	m.statusMsg = fmt.Sprintf("Activate '%s'? Current auth will be replaced. (y/n)", profile.Name)
 	return m, nil
 }
 
@@ -1066,8 +1125,32 @@ func (m Model) handleLoginProfile() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	profile := profiles[m.selected]
-	m.statusMsg = fmt.Sprintf("Login/refresh %s... (not yet implemented)", profile.Name)
-	return m, nil
+	provider := m.currentProvider()
+
+	m.statusMsg = fmt.Sprintf("Refreshing %s token...", profile.Name)
+
+	// Return a command that performs the async refresh
+	return m, m.doRefreshProfile(provider, profile.Name)
+}
+
+// doRefreshProfile returns a tea.Cmd that performs the token refresh.
+func (m Model) doRefreshProfile(provider, profile string) tea.Cmd {
+	return func() tea.Msg {
+		vault := authfile.NewVault(m.vaultPath)
+
+		// Get health storage for updating health data after refresh
+		store := health.NewStorage("")
+
+		// Perform the refresh
+		ctx := context.Background()
+		err := refresh.RefreshProfile(ctx, provider, profile, vault, store)
+
+		return refreshResultMsg{
+			provider: provider,
+			profile:  profile,
+			err:      err,
+		}
+	}
 }
 
 // handleOpenInBrowser opens the account page in browser.
@@ -1139,11 +1222,67 @@ func (m Model) handleSetProjectAssociation() (tea.Model, tea.Cmd) {
 // executeConfirmedAction executes the pending confirmed action.
 func (m Model) executeConfirmedAction() (tea.Model, tea.Cmd) {
 	switch m.pendingAction {
+	case confirmActivate:
+		profiles := m.currentProfiles()
+		if m.selected >= 0 && m.selected < len(profiles) {
+			profile := profiles[m.selected]
+			provider := m.currentProvider()
+
+			// Get the auth file set for this provider
+			fileSet, ok := authFileSetForProvider(provider)
+			if !ok {
+				m.showError(fmt.Errorf("unknown provider: %s", provider), "Activate")
+				m.state = stateList
+				m.pendingAction = confirmNone
+				return m, nil
+			}
+
+			// Perform the activation via vault restore
+			vault := authfile.NewVault(m.vaultPath)
+			if err := vault.Restore(fileSet, profile.Name); err != nil {
+				m.showError(err, "Activate")
+				m.state = stateList
+				m.pendingAction = confirmNone
+				return m, nil
+			}
+
+			m.showActivateSuccess(provider, profile.Name)
+			m.state = stateList
+			m.pendingAction = confirmNone
+
+			// Refresh profiles to update active state
+			ctx := refreshContext{
+				provider:        provider,
+				selectedProfile: profile.Name,
+			}
+			return m, m.refreshProfiles(ctx)
+		}
+
 	case confirmDelete:
 		profiles := m.currentProfiles()
 		if m.selected >= 0 && m.selected < len(profiles) {
 			profile := profiles[m.selected]
-			m.statusMsg = fmt.Sprintf("Deleted '%s' (not yet implemented)", profile.Name)
+			provider := m.currentProvider()
+
+			// Perform the deletion via vault
+			vault := authfile.NewVault(m.vaultPath)
+			if err := vault.Delete(provider, profile.Name); err != nil {
+				m.showError(err, fmt.Sprintf("Delete %s", profile.Name))
+				m.state = stateList
+				m.pendingAction = confirmNone
+				return m, nil
+			}
+
+			m.showDeleteSuccess(profile.Name)
+			m.state = stateList
+			m.pendingAction = confirmNone
+
+			// Refresh profiles with context for intelligent selection restoration
+			ctx := refreshContext{
+				provider:       provider,
+				deletedProfile: profile.Name,
+			}
+			return m, m.refreshProfiles(ctx)
 		}
 	}
 	m.state = stateList
@@ -1239,6 +1378,7 @@ func (m Model) syncDetailPanel() {
 	}
 	m.detailPanel.SetProfile(detail)
 }
+
 
 // View implements tea.Model.
 func (m Model) View() string {
@@ -1623,4 +1763,249 @@ func (m Model) badgeFor(provider, profile string) string {
 		return ""
 	}
 	return b.badge
+}
+
+// refreshContext holds state to preserve across profile refresh operations.
+type refreshContext struct {
+	provider        string // Provider being modified
+	selectedProfile string // Profile name that was selected before refresh
+	deletedProfile  string // Profile name that was deleted (if any)
+}
+
+// profilesRefreshedMsg is sent when profiles are reloaded after a mutation.
+type profilesRefreshedMsg struct {
+	profiles map[string][]Profile
+	ctx      refreshContext
+	err      error
+}
+
+// refreshProfiles returns a tea.Cmd that reloads profiles from the vault
+// while preserving selection context for intelligent index restoration.
+func (m Model) refreshProfiles(ctx refreshContext) tea.Cmd {
+	return func() tea.Msg {
+		vault := authfile.NewVault(m.vaultPath)
+		profiles := make(map[string][]Profile)
+
+		for _, name := range m.providers {
+			names, err := vault.List(name)
+			if err != nil {
+				return profilesRefreshedMsg{
+					err: fmt.Errorf("list vault profiles for %s: %w", name, err),
+					ctx: ctx,
+				}
+			}
+
+			active := ""
+			if len(names) > 0 {
+				if fileSet, ok := authFileSetForProvider(name); ok {
+					if ap, err := vault.ActiveProfile(fileSet); err == nil {
+						active = ap
+					}
+				}
+			}
+
+			sort.Strings(names)
+			ps := make([]Profile, 0, len(names))
+			for _, prof := range names {
+				ps = append(ps, Profile{
+					Name:     prof,
+					Provider: name,
+					IsActive: prof == active,
+				})
+			}
+			profiles[name] = ps
+		}
+
+		return profilesRefreshedMsg{profiles: profiles, ctx: ctx}
+	}
+}
+
+// refreshProfilesSimple returns a tea.Cmd that reloads profiles preserving
+// current selection by profile name.
+func (m Model) refreshProfilesSimple() tea.Cmd {
+	ctx := refreshContext{
+		provider: m.currentProvider(),
+	}
+	if profiles := m.currentProfiles(); m.selected >= 0 && m.selected < len(profiles) {
+		ctx.selectedProfile = profiles[m.selected].Name
+	}
+	return m.refreshProfiles(ctx)
+}
+
+// restoreSelection finds the appropriate selection index after a refresh.
+// It tries to maintain selection on the same profile, or adjusts intelligently
+// if the profile was deleted.
+func (m *Model) restoreSelection(ctx refreshContext) {
+	profiles := m.currentProfiles()
+	if len(profiles) == 0 {
+		m.selected = 0
+		return
+	}
+
+	// If a profile was deleted, try to select the next one in the list
+	if ctx.deletedProfile != "" {
+		// Find position where deleted profile was (profiles are sorted)
+		for i, p := range profiles {
+			if p.Name > ctx.deletedProfile {
+				// Select the profile that took its place
+				m.selected = i
+				if m.selected > 0 {
+					m.selected-- // Prefer previous profile if available
+				}
+				return
+			}
+		}
+		// Deleted profile was last, select new last
+		m.selected = len(profiles) - 1
+		return
+	}
+
+	// Try to find the previously selected profile by name
+	if ctx.selectedProfile != "" {
+		for i, p := range profiles {
+			if p.Name == ctx.selectedProfile {
+				m.selected = i
+				return
+			}
+		}
+	}
+
+	// Fallback: keep current index if valid, otherwise clamp to range
+	if m.selected >= len(profiles) {
+		m.selected = len(profiles) - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
+}
+
+// showError sets the status message with a consistent error format.
+// It maps common error types to user-friendly messages.
+func (m *Model) showError(err error, context string) {
+	if err == nil {
+		return
+	}
+
+	msg := err.Error()
+
+	// Map common errors to user-friendly messages
+	switch {
+	case strings.Contains(msg, "no such file") || strings.Contains(msg, "does not exist"):
+		msg = "Profile not found in vault"
+	case strings.Contains(msg, "permission denied"):
+		msg = "Cannot write to auth file - check permissions"
+	case strings.Contains(msg, "invalid") || strings.Contains(msg, "corrupt"):
+		msg = "Profile data corrupted - try re-backup"
+	case strings.Contains(msg, "already exists"):
+		msg = "Profile already exists"
+	case strings.Contains(msg, "locked"):
+		msg = "Profile is currently locked by another process"
+	}
+
+	if context != "" {
+		m.statusMsg = fmt.Sprintf("%s: %s", context, msg)
+	} else {
+		m.statusMsg = msg
+	}
+}
+
+// showSuccess sets the status message with a success notification.
+func (m *Model) showSuccess(format string, args ...interface{}) {
+	m.statusMsg = fmt.Sprintf(format, args...)
+}
+
+// showActivateSuccess shows a success message for profile activation.
+func (m *Model) showActivateSuccess(provider, profile string) {
+	m.showSuccess("Activated %s for %s", profile, provider)
+}
+
+// showDeleteSuccess shows a success message for profile deletion.
+func (m *Model) showDeleteSuccess(profile string) {
+	m.showSuccess("Deleted %s", profile)
+}
+
+// showRefreshSuccess shows a success message for token refresh.
+func (m *Model) showRefreshSuccess(profile string, expiresAt time.Time) {
+	if expiresAt.IsZero() {
+		m.showSuccess("Refreshed %s", profile)
+	} else {
+		m.showSuccess("Refreshed %s - new token valid until %s", profile, expiresAt.Format("Jan 2 15:04"))
+	}
+}
+
+// formatError returns a user-friendly error message.
+// It maps common error types to human-readable messages.
+func (m Model) formatError(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	msg := err.Error()
+
+	// Map common errors to user-friendly messages
+	switch {
+	case strings.Contains(msg, "no such file") || strings.Contains(msg, "does not exist"):
+		return "Profile not found in vault"
+	case strings.Contains(msg, "permission denied"):
+		return "Cannot write to auth file - check permissions"
+	case strings.Contains(msg, "invalid") || strings.Contains(msg, "corrupt"):
+		return "Profile data corrupted - try re-backup"
+	case strings.Contains(msg, "already exists"):
+		return "Profile already exists"
+	case strings.Contains(msg, "locked"):
+		return "Profile is currently locked by another process"
+	}
+
+	return msg
+}
+
+// refreshProfilesWithIndex returns a tea.Cmd that reloads profiles and
+// sets the selection to the specified index after refresh.
+func (m Model) refreshProfilesWithIndex(provider string, index int) tea.Cmd {
+	return func() tea.Msg {
+		vault := authfile.NewVault(m.vaultPath)
+		profiles := make(map[string][]Profile)
+
+		for _, name := range m.providers {
+			names, err := vault.List(name)
+			if err != nil {
+				return profilesRefreshedMsg{
+					err: fmt.Errorf("list vault profiles for %s: %w", name, err),
+					ctx: refreshContext{provider: provider},
+				}
+			}
+
+			active := ""
+			if len(names) > 0 {
+				if fileSet, ok := authFileSetForProvider(name); ok {
+					if ap, err := vault.ActiveProfile(fileSet); err == nil {
+						active = ap
+					}
+				}
+			}
+
+			sort.Strings(names)
+			ps := make([]Profile, 0, len(names))
+			for _, prof := range names {
+				ps = append(ps, Profile{
+					Name:     prof,
+					Provider: name,
+					IsActive: prof == active,
+				})
+			}
+			profiles[name] = ps
+		}
+
+		// Create context that will set the selection index after refresh
+		ctx := refreshContext{
+			provider: provider,
+		}
+
+		// Set the selected profile name based on the index
+		if providerProfiles := profiles[provider]; index >= 0 && index < len(providerProfiles) {
+			ctx.selectedProfile = providerProfiles[index].Name
+		}
+
+		return profilesRefreshedMsg{profiles: profiles, ctx: ctx}
+	}
 }
