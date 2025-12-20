@@ -230,7 +230,6 @@ func checkAllProfilesCooldown(tool string) (bool, time.Duration, string) {
 	defer db.Close()
 
 	now := time.Now()
-	profilesInCooldown := 0
 	var shortestRemaining time.Duration
 	var bestProfile string
 
@@ -247,15 +246,14 @@ func checkAllProfilesCooldown(tool string) (bool, time.Duration, string) {
 			return false, 0, ""
 		}
 
-		profilesInCooldown++
 		if shortestRemaining == 0 || remaining < shortestRemaining {
 			shortestRemaining = remaining
 			bestProfile = profile
 		}
 	}
 
-	// All profiles are in cooldown
-	return profilesInCooldown == len(profiles), shortestRemaining, bestProfile
+	// If we reach here, all profiles are in cooldown (no early returns occurred)
+	return true, shortestRemaining, bestProfile
 }
 
 // formatAllCooldownWarning formats the "all profiles in cooldown" warning.
