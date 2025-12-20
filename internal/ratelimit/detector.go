@@ -5,6 +5,7 @@
 package ratelimit
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 	"sync"
@@ -166,7 +167,7 @@ func (w *ObservingWriter) Write(p []byte) (n int, err error) {
 
 	// Process complete lines
 	for {
-		idx := indexOf(w.buffer, '\n')
+		idx := bytes.IndexByte(w.buffer, '\n')
 		if idx == -1 {
 			break
 		}
@@ -196,16 +197,6 @@ func (w *ObservingWriter) Flush() {
 		}
 		w.buffer = nil
 	}
-}
-
-// indexOf returns the index of the first occurrence of b in data, or -1.
-func indexOf(data []byte, b byte) int {
-	for i, c := range data {
-		if c == b {
-			return i
-		}
-	}
-	return -1
 }
 
 // ProviderFromString converts a string to a Provider, returning ProviderClaude

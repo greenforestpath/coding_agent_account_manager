@@ -196,3 +196,130 @@ func TestShellInitOutput(t *testing.T) {
 	// We can't easily test runShellInit directly since it writes to stdout,
 	// but we can test the generators
 }
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple path no quoting needed",
+			input:    "/usr/local/bin/caam",
+			expected: "/usr/local/bin/caam",
+		},
+		{
+			name:     "path with spaces",
+			input:    "/path with spaces/caam",
+			expected: "'/path with spaces/caam'",
+		},
+		{
+			name:     "path with single quote",
+			input:    "/path'quote/caam",
+			expected: "'/path'\"'\"'quote/caam'",
+		},
+		{
+			name:     "path with dollar sign",
+			input:    "/path$var/caam",
+			expected: "'/path$var/caam'",
+		},
+		{
+			name:     "path with backtick",
+			input:    "/path`cmd`/caam",
+			expected: "'/path`cmd`/caam'",
+		},
+		{
+			name:     "path with semicolon (injection attempt)",
+			input:    "/path; rm -rf /;/caam",
+			expected: "'/path; rm -rf /;/caam'",
+		},
+		{
+			name:     "path with pipe (injection attempt)",
+			input:    "/path | cat /etc/passwd/caam",
+			expected: "'/path | cat /etc/passwd/caam'",
+		},
+		{
+			name:     "path with ampersand",
+			input:    "/path && evil/caam",
+			expected: "'/path && evil/caam'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellQuote(tt.input)
+			if got != tt.expected {
+				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFishQuote(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "simple path no quoting needed",
+			input:    "/usr/local/bin/caam",
+			expected: "/usr/local/bin/caam",
+		},
+		{
+			name:     "path with spaces",
+			input:    "/path with spaces/caam",
+			expected: "'/path with spaces/caam'",
+		},
+		{
+			name:     "path with single quote",
+			input:    "/path'quote/caam",
+			expected: "'/path\\'quote/caam'",
+		},
+		{
+			name:     "path with dollar sign",
+			input:    "/path$var/caam",
+			expected: "'/path$var/caam'",
+		},
+		{
+			name:     "path with semicolon",
+			input:    "/path; rm -rf /;/caam",
+			expected: "'/path; rm -rf /;/caam'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := fishQuote(tt.input)
+			if got != tt.expected {
+				t.Errorf("fishQuote(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGenerateBashInit_PathWithSpaces(t *testing.T) {
+	// This tests that paths with special characters are properly quoted
+	caamPath := "/path with spaces/caam"
+	tools := []string{"claude"}
+
+	output := generateBashInit(caamPath, tools, false)
+
+	// Should use quoted path
+	if !strings.Contains(output, "'/path with spaces/caam'") {
+		t.Error("Path with spaces should be single-quoted in output")
+	}
+}
+
+func TestGenerateFishInit_PathWithSpaces(t *testing.T) {
+	// This tests that paths with special characters are properly quoted
+	caamPath := "/path with spaces/caam"
+	tools := []string{"claude"}
+
+	output := generateFishInit(caamPath, tools, false)
+
+	// Should use quoted path
+	if !strings.Contains(output, "'/path with spaces/caam'") {
+		t.Error("Path with spaces should be single-quoted in output")
+	}
+}

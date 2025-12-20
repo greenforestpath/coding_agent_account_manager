@@ -51,6 +51,7 @@ And rate limits will be handled automatically!`,
 }
 
 func init() {
+	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().Int("max-retries", 1, "maximum retry attempts on rate limit (0 = no retries)")
 	runCmd.Flags().Duration("cooldown", 60*time.Minute, "cooldown duration after rate limit")
 	runCmd.Flags().Bool("quiet", false, "suppress profile switch notifications")
@@ -163,8 +164,4 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-func init() {
-	rootCmd.AddCommand(runCmd)
 }
