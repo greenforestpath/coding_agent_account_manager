@@ -415,8 +415,8 @@ func TestCheckAuthFiles(t *testing.T) {
 	}
 }
 
-// TestEnvCommand tests the env command structure.
-func TestEnvCommand(t *testing.T) {
+// TestEnvCommandFromRoot tests the env command structure.
+func TestEnvCommandFromRoot(t *testing.T) {
 	// Find env command
 	var envCmd *cobra.Command
 	for _, cmd := range rootCmd.Commands() {

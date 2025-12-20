@@ -496,3 +496,230 @@ func containsAt(s, substr string, start int) bool {
 	}
 	return false
 }
+
+func TestProfileKey(t *testing.T) {
+	tests := []struct {
+		provider string
+		profile  string
+		want     string
+	}{
+		{"claude", "work", "claude/work"},
+		{"codex", "personal", "codex/personal"},
+		{"gemini", "team-1", "gemini/team-1"},
+	}
+
+	for _, tt := range tests {
+		got := ProfileKey(tt.provider, tt.profile)
+		if got != tt.want {
+			t.Errorf("ProfileKey(%q, %q) = %q, want %q", tt.provider, tt.profile, got, tt.want)
+		}
+	}
+}
+
+func TestAddAlias(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Add first alias
+	cfg.AddAlias("claude", "work-account-1", "work")
+	aliases := cfg.GetAliases("claude", "work-account-1")
+	if len(aliases) != 1 || aliases[0] != "work" {
+		t.Errorf("GetAliases() = %v, want [work]", aliases)
+	}
+
+	// Add second alias for same profile
+	cfg.AddAlias("claude", "work-account-1", "w")
+	aliases = cfg.GetAliases("claude", "work-account-1")
+	if len(aliases) != 2 {
+		t.Errorf("GetAliases() len = %d, want 2", len(aliases))
+	}
+
+	// Add duplicate - should not add
+	cfg.AddAlias("claude", "work-account-1", "work")
+	aliases = cfg.GetAliases("claude", "work-account-1")
+	if len(aliases) != 2 {
+		t.Errorf("GetAliases() len after duplicate = %d, want 2", len(aliases))
+	}
+
+	// Add alias for different profile
+	cfg.AddAlias("claude", "personal", "home")
+	aliases = cfg.GetAliases("claude", "personal")
+	if len(aliases) != 1 || aliases[0] != "home" {
+		t.Errorf("GetAliases(personal) = %v, want [home]", aliases)
+	}
+}
+
+func TestRemoveAlias(t *testing.T) {
+	cfg := &Config{
+		Aliases: map[string][]string{
+			"claude/work": {"w", "work"},
+			"codex/dev":   {"d"},
+		},
+	}
+
+	// Remove existing alias
+	if !cfg.RemoveAlias("w") {
+		t.Error("RemoveAlias(w) should return true")
+	}
+
+	aliases := cfg.GetAliases("claude", "work")
+	if len(aliases) != 1 || aliases[0] != "work" {
+		t.Errorf("GetAliases() after remove = %v, want [work]", aliases)
+	}
+
+	// Remove last alias - should remove the key
+	if !cfg.RemoveAlias("work") {
+		t.Error("RemoveAlias(work) should return true")
+	}
+	if _, exists := cfg.Aliases["claude/work"]; exists {
+		t.Error("Alias key should be removed when no aliases remain")
+	}
+
+	// Remove non-existent alias
+	if cfg.RemoveAlias("nonexistent") {
+		t.Error("RemoveAlias(nonexistent) should return false")
+	}
+}
+
+func TestResolveAlias(t *testing.T) {
+	cfg := &Config{
+		Aliases: map[string][]string{
+			"claude/work-account":   {"work", "w"},
+			"codex/dev":             {"d"},
+			"gemini/team-unlimited": {"team"},
+		},
+	}
+
+	tests := []struct {
+		alias        string
+		wantProvider string
+		wantProfile  string
+		wantFound    bool
+	}{
+		{"work", "claude", "work-account", true},
+		{"w", "claude", "work-account", true},
+		{"d", "codex", "dev", true},
+		{"team", "gemini", "team-unlimited", true},
+		{"nonexistent", "", "", false},
+	}
+
+	for _, tt := range tests {
+		provider, profile, found := cfg.ResolveAlias(tt.alias)
+		if found != tt.wantFound || provider != tt.wantProvider || profile != tt.wantProfile {
+			t.Errorf("ResolveAlias(%q) = (%q, %q, %v), want (%q, %q, %v)",
+				tt.alias, provider, profile, found, tt.wantProvider, tt.wantProfile, tt.wantFound)
+		}
+	}
+}
+
+func TestResolveAliasForProvider(t *testing.T) {
+	cfg := &Config{
+		Aliases: map[string][]string{
+			"claude/work-account": {"work", "w"},
+			"codex/work-codex":    {"work"},
+		},
+	}
+
+	// Resolve within provider
+	if got := cfg.ResolveAliasForProvider("claude", "work"); got != "work-account" {
+		t.Errorf("ResolveAliasForProvider(claude, work) = %q, want work-account", got)
+	}
+
+	// Same alias, different provider
+	if got := cfg.ResolveAliasForProvider("codex", "work"); got != "work-codex" {
+		t.Errorf("ResolveAliasForProvider(codex, work) = %q, want work-codex", got)
+	}
+
+	// Non-existent alias
+	if got := cfg.ResolveAliasForProvider("claude", "nonexistent"); got != "" {
+		t.Errorf("ResolveAliasForProvider(claude, nonexistent) = %q, want empty", got)
+	}
+}
+
+func TestFavorites(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Initially empty
+	if favs := cfg.GetFavorites("claude"); favs != nil {
+		t.Errorf("GetFavorites() = %v, want nil", favs)
+	}
+
+	// Set favorites
+	cfg.SetFavorites("claude", []string{"work", "personal", "backup"})
+	favs := cfg.GetFavorites("claude")
+	if len(favs) != 3 {
+		t.Errorf("GetFavorites() len = %d, want 3", len(favs))
+	}
+	if favs[0] != "work" || favs[1] != "personal" || favs[2] != "backup" {
+		t.Errorf("GetFavorites() = %v, want [work personal backup]", favs)
+	}
+
+	// Check IsFavorite
+	if !cfg.IsFavorite("claude", "work") {
+		t.Error("IsFavorite(claude, work) should be true")
+	}
+	if !cfg.IsFavorite("claude", "personal") {
+		t.Error("IsFavorite(claude, personal) should be true")
+	}
+	if cfg.IsFavorite("claude", "nonexistent") {
+		t.Error("IsFavorite(claude, nonexistent) should be false")
+	}
+	if cfg.IsFavorite("codex", "work") {
+		t.Error("IsFavorite(codex, work) should be false (different provider)")
+	}
+
+	// Clear favorites
+	cfg.SetFavorites("claude", nil)
+	if favs := cfg.GetFavorites("claude"); favs != nil {
+		t.Errorf("GetFavorites() after clear = %v, want nil", favs)
+	}
+}
+
+func TestFuzzyMatch(t *testing.T) {
+	profiles := []string{
+		"work-account-1",
+		"work-account-2",
+		"personal-gmail",
+		"backup-old",
+	}
+
+	cfg := &Config{
+		Aliases: map[string][]string{
+			"claude/work-account-1": {"work", "w"},
+			"claude/personal-gmail": {"home", "h"},
+		},
+	}
+
+	tests := []struct {
+		query    string
+		wantLen  int
+		wantFirst string
+	}{
+		// Exact match
+		{"work-account-1", 1, "work-account-1"},
+		// Alias exact match + prefix matches other profiles
+		{"work", 2, "work-account-1"}, // work-account-1 via alias (score 1), work-account-2 via prefix (score 3)
+		{"w", 2, "work-account-1"},    // work-account-1 via alias (score 1), work-account-2 via prefix (score 3)
+		// Alias prefix match + profile prefix match
+		{"wo", 2, "work-account-1"}, // work-account-1 via alias prefix (score 2), work-account-2 via profile prefix (score 3)
+		// Profile prefix match
+		{"per", 1, "personal-gmail"},
+		// Substring match
+		{"gmail", 1, "personal-gmail"},
+		{"account", 2, "work-account-1"}, // matches work-account-1 and work-account-2
+		// No match
+		{"nonexistent", 0, ""},
+		// Empty query returns all
+		{"", 4, "work-account-1"},
+	}
+
+	for _, tt := range tests {
+		matches := cfg.FuzzyMatch("claude", tt.query, profiles)
+		if len(matches) != tt.wantLen {
+			t.Errorf("FuzzyMatch(%q) len = %d, want %d (got %v)", tt.query, len(matches), tt.wantLen, matches)
+			continue
+		}
+		if tt.wantLen > 0 && matches[0] != tt.wantFirst {
+			t.Errorf("FuzzyMatch(%q)[0] = %q, want %q", tt.query, matches[0], tt.wantFirst)
+		}
+	}
+}

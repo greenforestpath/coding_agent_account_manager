@@ -106,6 +106,12 @@ func runActivate(cmd *cobra.Command, args []string) error {
 
 	if len(args) == 2 {
 		profileName = args[1]
+
+		// Try to resolve as alias or fuzzy match
+		profiles, err := vault.List(tool)
+		if err == nil {
+			profileName = resolveProfileName(tool, profileName, profiles)
+		}
 	} else {
 		// Resolve from project/default first unless user explicitly requested rotation.
 		if !autoSelect {
@@ -391,4 +397,36 @@ func selectProfileWithRotation(tool string, profiles []string, currentProfile st
 	}
 
 	return result, nil
+}
+
+// resolveProfileName resolves a profile name from user input.
+// It tries: exact match -> alias resolution -> fuzzy match.
+func resolveProfileName(tool, input string, profiles []string) string {
+	// Check for exact match first
+	for _, p := range profiles {
+		if p == input {
+			return input
+		}
+	}
+
+	// Try alias resolution
+	globalCfg, err := config.Load()
+	if err == nil {
+		if resolved := globalCfg.ResolveAliasForProvider(tool, input); resolved != "" {
+			fmt.Printf("Using alias: %s -> %s\n", input, resolved)
+			return resolved
+		}
+
+		// Try fuzzy matching
+		matches := globalCfg.FuzzyMatch(tool, input, profiles)
+		if len(matches) > 0 {
+			if matches[0] != input {
+				fmt.Printf("Matched: %s -> %s\n", input, matches[0])
+			}
+			return matches[0]
+		}
+	}
+
+	// No match found, return original (will fail later with proper error)
+	return input
 }
