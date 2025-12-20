@@ -117,9 +117,12 @@ func NewSyncState(basePath string) *SyncState {
 		basePath = SyncDataDir()
 	}
 
+	pool := NewSyncPool()
+	pool.SetBasePath(basePath)
+
 	return &SyncState{
 		Identity: nil,
-		Pool:     NewSyncPool(),
+		Pool:     pool,
 		Queue: &SyncQueue{
 			Entries: make([]QueueEntry, 0),
 			MaxSize: DefaultQueueMaxSize,
@@ -146,6 +149,7 @@ func (s *SyncState) Load() error {
 
 	// Load pool
 	pool := NewSyncPool()
+	pool.SetBasePath(s.basePath)
 	if err := pool.Load(); err != nil {
 		return fmt.Errorf("load pool: %w", err)
 	}

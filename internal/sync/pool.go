@@ -32,6 +32,10 @@ type SyncPool struct {
 	// LastFullSync is the timestamp of the last full sync operation.
 	LastFullSync time.Time `json:"last_full_sync,omitempty"`
 
+	// basePath is the directory where pool.json is stored.
+	// If empty, uses the global SyncDataDir().
+	basePath string
+
 	mu sync.RWMutex
 }
 
@@ -48,6 +52,23 @@ func NewSyncPool() *SyncPool {
 // poolPath returns the path to the pool configuration file.
 func poolPath() string {
 	return filepath.Join(SyncDataDir(), poolFileName)
+}
+
+// SetBasePath sets the base directory for pool storage.
+// This allows tests to use a custom directory instead of the global system path.
+func (p *SyncPool) SetBasePath(path string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.basePath = path
+}
+
+// getPoolPath returns the path to use for this pool's file.
+// Uses basePath if set, otherwise falls back to the global poolPath().
+func (p *SyncPool) getPoolPath() string {
+	if p.basePath != "" {
+		return filepath.Join(p.basePath, poolFileName)
+	}
+	return poolPath()
 }
 
 // AddMachine adds a machine to the pool.
@@ -190,7 +211,7 @@ func (p *SyncPool) Save() error {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	path := poolPath()
+	path := p.getPoolPath()
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
@@ -241,7 +262,7 @@ func (p *SyncPool) Load() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	path := poolPath()
+	path := p.getPoolPath()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
