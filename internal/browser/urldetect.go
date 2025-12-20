@@ -112,6 +112,29 @@ func cleanURL(s string) string {
 	return strings.TrimRight(s, ".,;:!)]}>")
 }
 
+// shellEscape escapes a string for safe use inside double-quoted shell strings.
+// This prevents command injection via special shell characters.
+func shellEscape(s string) string {
+	// Characters that have special meaning inside double quotes in POSIX sh:
+	// $ - variable expansion
+	// ` - command substitution
+	// \ - escape character
+	// " - ends the string
+	// ! - history expansion in bash (not POSIX, but common)
+	var result strings.Builder
+	result.Grow(len(s) + 10) // Preallocate with some extra space
+	for _, r := range s {
+		switch r {
+		case '"', '$', '`', '\\':
+			result.WriteByte('\\')
+			result.WriteRune(r)
+		default:
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+
 // BrowserHelperScript generates a shell script that can be used as BROWSER env var.
 // When invoked, the script will call the specified handler with the URL.
 //
@@ -121,20 +144,24 @@ func cleanURL(s string) string {
 //	os.Setenv("BROWSER", script)
 //
 // The script format allows the CLI tools to "open" URLs through caam's browser launcher.
+// Note: Both caamBinary and profileName are escaped to prevent shell injection.
 func BrowserHelperScript(caamBinary, profileName string) string {
 	// Create a simple inline script that calls caam
-	return `sh -c '` + caamBinary + ` browser-open --profile="` + profileName + `" "$1"' _`
+	// Escape inputs to prevent shell injection attacks
+	return `sh -c '"` + shellEscape(caamBinary) + `" browser-open --profile="` + shellEscape(profileName) + `" "$1"' _`
 }
 
 // WriteBrowserHelper writes a browser helper script to a temporary file.
 // Returns the path to the script. Caller is responsible for cleanup.
+// Note: Both caamBinary and profileName are escaped to prevent shell injection.
 func WriteBrowserHelper(caamBinary, profileName string) (string, error) {
 	tmpDir := os.TempDir()
 	scriptPath := filepath.Join(tmpDir, "caam-browser-helper.sh")
 
+	// Escape inputs to prevent shell injection attacks
 	script := `#!/bin/sh
 # CAAM Browser Helper - opens URLs with configured browser profile
-exec "` + caamBinary + `" browser-open --profile="` + profileName + `" "$1"
+exec "` + shellEscape(caamBinary) + `" browser-open --profile="` + shellEscape(profileName) + `" "$1"
 `
 
 	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
