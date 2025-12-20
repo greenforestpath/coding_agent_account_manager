@@ -16,8 +16,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 )
 
 // DefaultPassthroughs returns the default set of paths to symlink.
@@ -76,7 +74,7 @@ func NewManagerWithPaths(paths []string) (*Manager, error) {
 }
 
 // SetupPassthroughs creates symlinks in the pseudo-HOME directory.
-func (m *Manager) SetupPassthroughs(prof *profile.Profile, pseudoHome string) error {
+func (m *Manager) SetupPassthroughs(pseudoHome string) error {
 	for _, relPath := range m.passthroughs {
 		realPath := filepath.Join(m.realHome, relPath)
 		linkPath := filepath.Join(pseudoHome, relPath)
@@ -109,7 +107,7 @@ func (m *Manager) SetupPassthroughs(prof *profile.Profile, pseudoHome string) er
 }
 
 // VerifyPassthroughs checks the state of all passthrough symlinks.
-func (m *Manager) VerifyPassthroughs(prof *profile.Profile, pseudoHome string) ([]Status, error) {
+func (m *Manager) VerifyPassthroughs(pseudoHome string) ([]Status, error) {
 	var statuses []Status
 
 	for _, relPath := range m.passthroughs {
@@ -191,9 +189,11 @@ func (m *Manager) RemovePassthrough(relPath string) {
 	}
 }
 
-// Passthroughs returns the current list of passthrough paths.
+// Passthroughs returns a copy of the current list of passthrough paths.
 func (m *Manager) Passthroughs() []string {
-	return m.passthroughs
+	result := make([]string, len(m.passthroughs))
+	copy(result, m.passthroughs)
+	return result
 }
 
 // RealHome returns the real HOME directory.

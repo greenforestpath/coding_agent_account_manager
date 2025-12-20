@@ -131,7 +131,7 @@ func (p *Provider) PrepareProfile(ctx context.Context, prof *profile.Profile) er
 		return fmt.Errorf("create passthrough manager: %w", err)
 	}
 
-	if err := mgr.SetupPassthroughs(prof, homePath); err != nil {
+	if err := mgr.SetupPassthroughs(homePath); err != nil {
 		return fmt.Errorf("setup passthroughs: %w", err)
 	}
 
@@ -341,7 +341,7 @@ func (p *Provider) ValidateProfile(ctx context.Context, prof *profile.Profile) e
 		return fmt.Errorf("create passthrough manager: %w", err)
 	}
 
-	statuses, err := mgr.VerifyPassthroughs(prof, homePath)
+	statuses, err := mgr.VerifyPassthroughs(homePath)
 	if err != nil {
 		return fmt.Errorf("verify passthroughs: %w", err)
 	}
@@ -353,6 +353,119 @@ func (p *Provider) ValidateProfile(ctx context.Context, prof *profile.Profile) e
 	}
 
 	return nil
+}
+
+// DetectExistingAuth detects existing Claude authentication files in standard locations.
+// Locations checked:
+// - ~/.claude.json (legacy/main OAuth session state)
+// - ~/.config/claude-code/auth.json (current auth credentials)
+func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
+	detection := &provider.AuthDetection{
+		Provider:  p.ID(),
+		Locations: []provider.AuthLocation{},
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("get home dir: %w", err)
+	}
+
+	// Define locations to check
+	locations := []struct {
+		path        string
+		description string
+	}{
+		{
+			path:        filepath.Join(homeDir, ".claude.json"),
+			description: "Claude Code OAuth session state (legacy location)",
+		},
+		{
+			path:        filepath.Join(xdgConfigHome(), "claude-code", "auth.json"),
+			description: "Claude Code auth credentials (current location)",
+		},
+	}
+
+	var mostRecent *provider.AuthLocation
+
+	for _, loc := range locations {
+		authLoc := provider.AuthLocation{
+			Path:        loc.path,
+			Description: loc.description,
+		}
+
+		info, err := os.Stat(loc.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				authLoc.Exists = false
+			} else {
+				authLoc.ValidationError = fmt.Sprintf("stat error: %v", err)
+			}
+			detection.Locations = append(detection.Locations, authLoc)
+			continue
+		}
+
+		authLoc.Exists = true
+		authLoc.LastModified = info.ModTime()
+		authLoc.FileSize = info.Size()
+
+		// Basic validation: try to parse as JSON
+		data, err := os.ReadFile(loc.path)
+		if err != nil {
+			authLoc.ValidationError = fmt.Sprintf("read error: %v", err)
+		} else {
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				authLoc.ValidationError = fmt.Sprintf("invalid JSON: %v", err)
+			} else {
+				// Check for expected fields based on file type
+				if filepath.Base(loc.path) == ".claude.json" {
+					// Check for oauthToken or similar
+					if _, ok := parsed["oauthToken"]; ok {
+						authLoc.IsValid = true
+					} else if _, ok := parsed["sessionKey"]; ok {
+						authLoc.IsValid = true
+					} else {
+						authLoc.ValidationError = "missing expected OAuth fields"
+					}
+				} else {
+					// auth.json - check for typical auth fields
+					if _, ok := parsed["accessToken"]; ok {
+						authLoc.IsValid = true
+					} else if _, ok := parsed["access_token"]; ok {
+						authLoc.IsValid = true
+					} else {
+						authLoc.IsValid = true // Accept any valid JSON
+					}
+				}
+			}
+		}
+
+		detection.Locations = append(detection.Locations, authLoc)
+
+		// Track most recent valid auth
+		if authLoc.Exists && authLoc.IsValid {
+			detection.Found = true
+			if mostRecent == nil || authLoc.LastModified.After(mostRecent.LastModified) {
+				locCopy := authLoc // Copy to avoid pointer issues
+				mostRecent = &locCopy
+			}
+		}
+	}
+
+	detection.Primary = mostRecent
+
+	// Set warning if multiple valid auth files found
+	validCount := 0
+	for _, loc := range detection.Locations {
+		if loc.Exists && loc.IsValid {
+			validCount++
+		}
+	}
+	if validCount > 1 {
+		detection.Warning = "multiple auth files found; using most recent"
+	}
+
+	return detection, nil
 }
 
 // Ensure Provider implements the interface.

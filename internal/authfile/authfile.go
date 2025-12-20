@@ -716,11 +716,15 @@ func validateVaultSegment(kind, val string) (string, error) {
 	if val == "." || val == ".." {
 		return "", fmt.Errorf("invalid %s: %q", kind, val)
 	}
-	if strings.ContainsRune(val, 0) {
-		return "", fmt.Errorf("invalid %s: %q", kind, val)
-	}
-	if strings.ContainsAny(val, "/\\") {
-		return "", fmt.Errorf("invalid %s: %q", kind, val)
+	// Only allow safe characters: alphanumeric, underscore, hyphen, and period.
+	// This prevents shell injection when profile names are used in shell scripts
+	// (e.g., claude.go's setupAPIKeyHelper embeds profile name in bash script).
+	// Also prevents filesystem issues and unexpected behavior.
+	for _, r := range val {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			return "", fmt.Errorf("invalid %s: %q (only alphanumeric, underscore, hyphen, and period allowed)", kind, val)
+		}
 	}
 	if filepath.IsAbs(val) || filepath.VolumeName(val) != "" {
 		return "", fmt.Errorf("invalid %s: %q", kind, val)

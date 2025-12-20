@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -544,6 +543,8 @@ func (w *Watcher) Start() error {
 		return fmt.Errorf("watcher already running")
 	}
 	w.running = true
+	// Recreate done channel in case watcher was previously stopped
+	w.done = make(chan struct{})
 	w.mu.Unlock()
 
 	// Capture initial state
@@ -581,20 +582,4 @@ func (w *Watcher) Stop() {
 
 	w.running = false
 	close(w.done)
-}
-
-// hashFile computes SHA256 hash of a file.
-func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

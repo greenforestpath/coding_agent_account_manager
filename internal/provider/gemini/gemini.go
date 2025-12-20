@@ -118,7 +118,7 @@ func (p *Provider) PrepareProfile(ctx context.Context, prof *profile.Profile) er
 		return fmt.Errorf("create passthrough manager: %w", err)
 	}
 
-	if err := mgr.SetupPassthroughs(prof, homePath); err != nil {
+	if err := mgr.SetupPassthroughs(homePath); err != nil {
 		return fmt.Errorf("setup passthroughs: %w", err)
 	}
 
@@ -348,7 +348,7 @@ func (p *Provider) ValidateProfile(ctx context.Context, prof *profile.Profile) e
 		return fmt.Errorf("create passthrough manager: %w", err)
 	}
 
-	statuses, err := mgr.VerifyPassthroughs(prof, homePath)
+	statuses, err := mgr.VerifyPassthroughs(homePath)
 	if err != nil {
 		return fmt.Errorf("verify passthroughs: %w", err)
 	}

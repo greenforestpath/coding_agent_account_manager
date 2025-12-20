@@ -362,13 +362,20 @@ func (s *Storage) GetStatus(provider, name string) (HealthStatus, error) {
 	return CalculateStatus(health), nil
 }
 
-// ListProfiles returns all profiles with health data.
+// ListProfiles returns a copy of all profiles with health data.
 func (s *Storage) ListProfiles() (map[string]*ProfileHealth, error) {
 	store, err := s.Load()
 	if err != nil {
 		return nil, err
 	}
-	return store.Profiles, nil
+	// Return a copy to prevent external modification of internal state
+	result := make(map[string]*ProfileHealth, len(store.Profiles))
+	for k, v := range store.Profiles {
+		// Deep copy the ProfileHealth struct
+		copy := *v
+		result[k] = &copy
+	}
+	return result, nil
 }
 
 // Path returns the storage file path.

@@ -26,8 +26,13 @@ func (p *ConnectionPool) Get(machine *Machine) (*SSHClient, error) {
 	defer p.mu.Unlock()
 
 	// Check for existing connection
-	if client, exists := p.clients[machine.ID]; exists && client.IsConnected() {
-		return client, nil
+	if client, exists := p.clients[machine.ID]; exists {
+		if client.IsConnected() {
+			return client, nil
+		}
+		// Connection exists but is dead - clean it up before creating new one
+		client.Disconnect()
+		delete(p.clients, machine.ID)
 	}
 
 	// Create new connection
