@@ -1,0 +1,224 @@
+// Package ratelimit provides rate limit detection for AI CLI tools.
+//
+// It monitors stdout/stderr output for provider-specific rate limit patterns
+// and signals when a rate limit is detected, enabling automatic profile switching.
+package ratelimit
+
+import (
+	"regexp"
+	"strings"
+	"sync"
+)
+
+// Provider identifies an AI CLI provider.
+type Provider string
+
+const (
+	// ProviderClaude is Anthropic's Claude CLI.
+	ProviderClaude Provider = "claude"
+
+	// ProviderCodex is OpenAI's Codex CLI.
+	ProviderCodex Provider = "codex"
+
+	// ProviderGemini is Google's Gemini CLI.
+	ProviderGemini Provider = "gemini"
+)
+
+// DefaultPatterns returns the default rate limit patterns for each provider.
+func DefaultPatterns() map[Provider][]string {
+	return map[Provider][]string{
+		ProviderClaude: {
+			`(?i)rate.?limit`,
+			`(?i)usage.?limit`,
+			`(?i)capacity`,
+			`\b429\b`,
+			`(?i)too.?many.?requests`,
+			`(?i)exceeded.*quota`,
+			`(?i)quota.*exceeded`,
+		},
+		ProviderCodex: {
+			`(?i)rate.?limit`,
+			`(?i)quota.?exceeded`,
+			`\b429\b`,
+			`(?i)too.?many.?requests`,
+			`(?i)exceeded.*rate`,
+			`(?i)slow.?down`,
+		},
+		ProviderGemini: {
+			`(?i)RESOURCE_EXHAUSTED`,
+			`(?i)quota`,
+			`(?i)rate.?limit`,
+			`\b429\b`,
+			`(?i)too.?many.?requests`,
+		},
+	}
+}
+
+// Detector monitors output for rate limit patterns.
+type Detector struct {
+	mu       sync.RWMutex
+	provider Provider
+	patterns []*regexp.Regexp
+	detected bool
+	reason   string
+}
+
+// NewDetector creates a new rate limit detector for the given provider.
+// Uses default patterns if none are provided.
+func NewDetector(provider Provider, customPatterns []string) (*Detector, error) {
+	d := &Detector{
+		provider: provider,
+	}
+
+	// Use custom patterns if provided, otherwise use defaults
+	patterns := customPatterns
+	if len(patterns) == 0 {
+		defaults := DefaultPatterns()
+		patterns = defaults[provider]
+	}
+
+	// Compile patterns
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, err
+		}
+		d.patterns = append(d.patterns, re)
+	}
+
+	return d, nil
+}
+
+// Check examines text for rate limit patterns.
+// Returns true if a rate limit pattern is detected.
+// The detection is sticky - once detected, it remains true.
+func (d *Detector) Check(text string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.detected {
+		return true
+	}
+
+	for _, re := range d.patterns {
+		if re.MatchString(text) {
+			d.detected = true
+			// Extract the matching portion for the reason
+			match := re.FindString(text)
+			d.reason = strings.TrimSpace(match)
+			return true
+		}
+	}
+
+	return false
+}
+
+// Detected returns whether a rate limit has been detected.
+func (d *Detector) Detected() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.detected
+}
+
+// Reason returns the detected rate limit text, if any.
+func (d *Detector) Reason() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.reason
+}
+
+// Reset clears the detection state.
+func (d *Detector) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.detected = false
+	d.reason = ""
+}
+
+// Provider returns the provider this detector is configured for.
+func (d *Detector) Provider() Provider {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.provider
+}
+
+// ObservingWriter wraps a writer and checks each write for rate limit patterns.
+type ObservingWriter struct {
+	detector *Detector
+	callback func(line string) // Optional callback for each line
+	buffer   []byte
+}
+
+// NewObservingWriter creates a writer that observes output for rate limits.
+func NewObservingWriter(detector *Detector, callback func(line string)) *ObservingWriter {
+	return &ObservingWriter{
+		detector: detector,
+		callback: callback,
+	}
+}
+
+// Write implements io.Writer, buffering and checking each line.
+func (w *ObservingWriter) Write(p []byte) (n int, err error) {
+	n = len(p)
+
+	// Append to buffer
+	w.buffer = append(w.buffer, p...)
+
+	// Process complete lines
+	for {
+		idx := indexOf(w.buffer, '\n')
+		if idx == -1 {
+			break
+		}
+
+		line := string(w.buffer[:idx])
+		w.buffer = w.buffer[idx+1:]
+
+		// Check for rate limit
+		w.detector.Check(line)
+
+		// Call callback if provided
+		if w.callback != nil {
+			w.callback(line)
+		}
+	}
+
+	return n, nil
+}
+
+// Flush processes any remaining buffered data.
+func (w *ObservingWriter) Flush() {
+	if len(w.buffer) > 0 {
+		line := string(w.buffer)
+		w.detector.Check(line)
+		if w.callback != nil {
+			w.callback(line)
+		}
+		w.buffer = nil
+	}
+}
+
+// indexOf returns the index of the first occurrence of b in data, or -1.
+func indexOf(data []byte, b byte) int {
+	for i, c := range data {
+		if c == b {
+			return i
+		}
+	}
+	return -1
+}
+
+// ProviderFromString converts a string to a Provider, returning ProviderClaude
+// as default for unknown providers.
+func ProviderFromString(s string) Provider {
+	switch strings.ToLower(s) {
+	case "claude":
+		return ProviderClaude
+	case "codex":
+		return ProviderCodex
+	case "gemini":
+		return ProviderGemini
+	default:
+		return ProviderClaude
+	}
+}
