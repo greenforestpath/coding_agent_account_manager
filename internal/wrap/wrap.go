@@ -277,6 +277,10 @@ func (w *Wrapper) runOnce(ctx context.Context, profile string) (int, bool, error
 	// Run the command
 	err = cmd.Run()
 
+	// Flush tee writers to ensure all buffered data is checked for patterns
+	stdoutTee.Flush()
+	stderrTee.Flush()
+
 	// Check for rate limit detection
 	rateLimitHit := detector.Detected()
 
@@ -294,6 +298,8 @@ func (w *Wrapper) runOnce(ctx context.Context, profile string) (int, bool, error
 }
 
 // teeWriter writes to a destination while also checking for rate limits.
+// It buffers data to ensure rate limit patterns aren't missed when split
+// across multiple Write calls (e.g., "rate li" then "mit exceeded").
 type teeWriter struct {
 	dest     io.Writer
 	detector *ratelimit.Detector
@@ -301,11 +307,49 @@ type teeWriter struct {
 }
 
 func (t *teeWriter) Write(p []byte) (n int, err error) {
-	// Check for rate limit patterns
-	t.detector.Check(string(p))
+	// Append to buffer for line-based pattern matching
+	t.buffer = append(t.buffer, p...)
+
+	// Process complete lines
+	for {
+		idx := indexByte(t.buffer, '\n')
+		if idx == -1 {
+			break
+		}
+
+		// Extract and check complete line
+		line := string(t.buffer[:idx])
+		t.buffer = t.buffer[idx+1:]
+		t.detector.Check(line)
+	}
+
+	// Also check partial buffer in case a rate limit message doesn't end with newline
+	// (e.g., JSON error response or final output)
+	if len(t.buffer) > 0 {
+		t.detector.Check(string(t.buffer))
+	}
 
 	// Forward to destination
 	return t.dest.Write(p)
+}
+
+// Flush checks any remaining buffered data for rate limit patterns.
+// Call this after the command completes.
+func (t *teeWriter) Flush() {
+	if len(t.buffer) > 0 {
+		t.detector.Check(string(t.buffer))
+		t.buffer = nil
+	}
+}
+
+// indexByte returns the index of the first occurrence of b in data, or -1.
+func indexByte(data []byte, b byte) int {
+	for i, c := range data {
+		if c == b {
+			return i
+		}
+	}
+	return -1
 }
 
 // authFileSetForProvider returns the auth file set for a provider.

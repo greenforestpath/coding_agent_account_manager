@@ -11,6 +11,7 @@ import (
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/ratelimit"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/rotation"
 )
 
@@ -175,8 +176,98 @@ func TestBinForProvider(t *testing.T) {
 }
 
 func TestTeeWriter(t *testing.T) {
-	// The teeWriter is internal to the package and tested via runOnce.
-	// This placeholder ensures the test file compiles.
+	// Test that teeWriter properly buffers and detects patterns split across writes
+	t.Run("split write detection", func(t *testing.T) {
+		// Create a detector with a pattern that could be split
+		detector, err := ratelimit.NewDetector(ratelimit.ProviderClaude, nil)
+		if err != nil {
+			t.Fatalf("create detector: %v", err)
+		}
+
+		dest := &bytes.Buffer{}
+		tw := &teeWriter{
+			dest:     dest,
+			detector: detector,
+		}
+
+		// Write "rate limit" in two parts to simulate split output
+		tw.Write([]byte("Error: rate li"))
+		tw.Write([]byte("mit exceeded\n"))
+		tw.Flush()
+
+		if !detector.Detected() {
+			t.Error("Detector failed to detect 'rate limit' split across writes")
+		}
+
+		// Verify output was forwarded correctly
+		if dest.String() != "Error: rate limit exceeded\n" {
+			t.Errorf("Output = %q, want 'Error: rate limit exceeded\\n'", dest.String())
+		}
+	})
+
+	t.Run("complete line detection", func(t *testing.T) {
+		detector, err := ratelimit.NewDetector(ratelimit.ProviderClaude, nil)
+		if err != nil {
+			t.Fatalf("create detector: %v", err)
+		}
+
+		dest := &bytes.Buffer{}
+		tw := &teeWriter{
+			dest:     dest,
+			detector: detector,
+		}
+
+		// Write complete line with rate limit
+		tw.Write([]byte("429 Too Many Requests\n"))
+		tw.Flush()
+
+		if !detector.Detected() {
+			t.Error("Detector failed to detect '429' in complete line")
+		}
+	})
+
+	t.Run("no false positives", func(t *testing.T) {
+		detector, err := ratelimit.NewDetector(ratelimit.ProviderClaude, nil)
+		if err != nil {
+			t.Fatalf("create detector: %v", err)
+		}
+
+		dest := &bytes.Buffer{}
+		tw := &teeWriter{
+			dest:     dest,
+			detector: detector,
+		}
+
+		// Write normal output
+		tw.Write([]byte("Hello world\n"))
+		tw.Write([]byte("Everything is working fine\n"))
+		tw.Flush()
+
+		if detector.Detected() {
+			t.Error("Detector falsely detected rate limit in normal output")
+		}
+	})
+
+	t.Run("partial line at end", func(t *testing.T) {
+		detector, err := ratelimit.NewDetector(ratelimit.ProviderClaude, nil)
+		if err != nil {
+			t.Fatalf("create detector: %v", err)
+		}
+
+		dest := &bytes.Buffer{}
+		tw := &teeWriter{
+			dest:     dest,
+			detector: detector,
+		}
+
+		// Write output without trailing newline (common in JSON errors)
+		tw.Write([]byte(`{"error": "rate limit exceeded"}`))
+		tw.Flush()
+
+		if !detector.Detected() {
+			t.Error("Detector failed to detect rate limit in partial line")
+		}
+	})
 }
 
 func TestResult(t *testing.T) {
