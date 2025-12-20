@@ -5,6 +5,7 @@
 package wrap
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -312,7 +313,7 @@ func (t *teeWriter) Write(p []byte) (n int, err error) {
 
 	// Process complete lines
 	for {
-		idx := indexByte(t.buffer, '\n')
+		idx := bytes.IndexByte(t.buffer, '\n')
 		if idx == -1 {
 			break
 		}
@@ -340,16 +341,6 @@ func (t *teeWriter) Flush() {
 		t.detector.Check(string(t.buffer))
 		t.buffer = nil
 	}
-}
-
-// indexByte returns the index of the first occurrence of b in data, or -1.
-func indexByte(data []byte, b byte) int {
-	for i, c := range data {
-		if c == b {
-			return i
-		}
-	}
-	return -1
 }
 
 // authFileSetForProvider returns the auth file set for a provider.
