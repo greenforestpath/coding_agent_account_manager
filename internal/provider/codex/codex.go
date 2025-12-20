@@ -307,6 +307,124 @@ func (p *Provider) ValidateProfile(ctx context.Context, prof *profile.Profile) e
 	return nil
 }
 
+// DetectExistingAuth detects existing Codex authentication files in standard locations.
+// Locations checked:
+// - $CODEX_HOME/auth.json (if CODEX_HOME is set)
+// - ~/.codex/auth.json (default location)
+func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
+	detection := &provider.AuthDetection{
+		Provider:  p.ID(),
+		Locations: []provider.AuthLocation{},
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("get home dir: %w", err)
+	}
+
+	// Define locations to check
+	locations := []struct {
+		path        string
+		description string
+	}{
+		{
+			path:        filepath.Join(homeDir, ".codex", "auth.json"),
+			description: "Codex CLI OAuth token (default location)",
+		},
+	}
+
+	// Also check CODEX_HOME if it's set and different from default
+	if codexHomeEnv := os.Getenv("CODEX_HOME"); codexHomeEnv != "" {
+		envPath := filepath.Join(codexHomeEnv, "auth.json")
+		defaultPath := filepath.Join(homeDir, ".codex", "auth.json")
+		if envPath != defaultPath {
+			locations = append([]struct {
+				path        string
+				description string
+			}{
+				{
+					path:        envPath,
+					description: "Codex CLI OAuth token (CODEX_HOME)",
+				},
+			}, locations...)
+		}
+	}
+
+	var mostRecent *provider.AuthLocation
+
+	for _, loc := range locations {
+		authLoc := provider.AuthLocation{
+			Path:        loc.path,
+			Description: loc.description,
+		}
+
+		info, err := os.Stat(loc.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				authLoc.Exists = false
+			} else {
+				authLoc.ValidationError = fmt.Sprintf("stat error: %v", err)
+			}
+			detection.Locations = append(detection.Locations, authLoc)
+			continue
+		}
+
+		authLoc.Exists = true
+		authLoc.LastModified = info.ModTime()
+		authLoc.FileSize = info.Size()
+
+		// Basic validation: try to parse as JSON and check for expected fields
+		data, err := os.ReadFile(loc.path)
+		if err != nil {
+			authLoc.ValidationError = fmt.Sprintf("read error: %v", err)
+		} else {
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				authLoc.ValidationError = fmt.Sprintf("invalid JSON: %v", err)
+			} else {
+				// Check for expected Codex auth fields
+				if _, ok := parsed["access_token"]; ok {
+					authLoc.IsValid = true
+				} else if _, ok := parsed["accessToken"]; ok {
+					authLoc.IsValid = true
+				} else if _, ok := parsed["api_key"]; ok {
+					authLoc.IsValid = true
+				} else if _, ok := parsed["token"]; ok {
+					authLoc.IsValid = true
+				} else {
+					authLoc.ValidationError = "missing expected auth fields (access_token, api_key, or token)"
+				}
+			}
+		}
+
+		detection.Locations = append(detection.Locations, authLoc)
+
+		// Track most recent valid auth
+		if authLoc.Exists && authLoc.IsValid {
+			detection.Found = true
+			if mostRecent == nil || authLoc.LastModified.After(mostRecent.LastModified) {
+				locCopy := authLoc // Copy to avoid pointer issues
+				mostRecent = &locCopy
+			}
+		}
+	}
+
+	detection.Primary = mostRecent
+
+	// Set warning if multiple valid auth files found
+	validCount := 0
+	for _, loc := range detection.Locations {
+		if loc.Exists && loc.IsValid {
+			validCount++
+		}
+	}
+	if validCount > 1 {
+		detection.Warning = "multiple auth files found; using most recent"
+	}
+
+	return detection, nil
+}
+
 // Ensure Provider implements the interface.
 var _ provider.Provider = (*Provider)(nil)
 var _ provider.DeviceCodeProvider = (*Provider)(nil)

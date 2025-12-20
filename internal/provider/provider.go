@@ -3,6 +3,7 @@ package provider
 
 import (
 	"context"
+	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 )
@@ -22,6 +23,26 @@ type AuthFileSpec struct {
 	Path        string // Absolute path to the auth file
 	Description string // Human-readable description
 	Required    bool   // Whether this file must exist for auth to work
+}
+
+// AuthLocation represents a detected auth file location with metadata.
+type AuthLocation struct {
+	Path            string    // Absolute path to auth file
+	Exists          bool      // File exists
+	LastModified    time.Time // Modification time
+	FileSize        int64     // Size in bytes
+	IsValid         bool      // Basic format validation passed
+	ValidationError string    // If IsValid=false, why
+	Description     string    // Human-readable description of this auth file
+}
+
+// AuthDetection represents detected existing auth in the system.
+type AuthDetection struct {
+	Provider  string         // e.g., "claude", "codex", "gemini"
+	Found     bool           // Whether any auth was detected
+	Locations []AuthLocation // All detected auth file locations
+	Primary   *AuthLocation  // Recommended/most recent location
+	Warning   string         // Any issues (e.g., "multiple auth files found")
 }
 
 // DeviceCodeProvider extends Provider with device code flow support.
@@ -86,6 +107,11 @@ type Provider interface {
 
 	// ValidateProfile checks if a profile is correctly configured.
 	ValidateProfile(ctx context.Context, p *profile.Profile) error
+
+	// DetectExistingAuth detects existing authentication files in standard system locations.
+	// This is used for first-run experience to discover and import existing credentials.
+	// Detection is read-only and never modifies original files.
+	DetectExistingAuth() (*AuthDetection, error)
 }
 
 // Registry holds all registered providers.
