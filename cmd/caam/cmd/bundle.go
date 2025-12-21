@@ -287,5 +287,5 @@ func promptPassword(prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSuffix(password, "\n"), nil
+	return strings.TrimRight(password, "\r\n"), nil
 }
