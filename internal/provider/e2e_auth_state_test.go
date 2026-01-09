@@ -304,11 +304,10 @@ func TestE2E_GeminiAuthState(t *testing.T) {
 
 	h.Log.SetStep("test_oauth_config")
 
-	// For OAuth mode, Gemini provider Status() checks for .config directory
-	// (which is where Google OAuth tokens are cached)
-	configPath := filepath.Join(homeDir, ".config")
-	if err := os.MkdirAll(configPath, 0700); err != nil {
-		t.Fatalf("Failed to create .config dir: %v", err)
+	// For OAuth mode, Gemini provider Status() checks settings.json
+	settingsPath := filepath.Join(geminiDir, "settings.json")
+	if err := os.WriteFile(settingsPath, []byte(`{"oauth": {}}`), 0600); err != nil {
+		t.Fatalf("Failed to write settings.json: %v", err)
 	}
 
 	status, err = prov.Status(ctx, prof)
@@ -317,10 +316,10 @@ func TestE2E_GeminiAuthState(t *testing.T) {
 	}
 
 	if !status.LoggedIn {
-		t.Errorf("Expected LoggedIn=true with .config directory")
+		t.Errorf("Expected LoggedIn=true with settings.json")
 	}
 
-	h.Log.Info("With .config directory: LoggedIn correctly true")
+	h.Log.Info("With settings.json: LoggedIn correctly true")
 
 	h.Log.SetStep("test_api_key_mode")
 
@@ -328,7 +327,7 @@ func TestE2E_GeminiAuthState(t *testing.T) {
 	apiKeyProf := &profile.Profile{
 		Name:     "test-apikey",
 		Provider: "gemini",
-		AuthMode: "apikey",
+		AuthMode: string(provider.AuthModeAPIKey),
 		BasePath: profileDir,
 	}
 

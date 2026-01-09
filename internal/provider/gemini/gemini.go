@@ -90,6 +90,11 @@ func (p *Provider) AuthFiles() []provider.AuthFileSpec {
 			Description: "Gemini CLI OAuth credentials cache",
 			Required:    false,
 		},
+		{
+			Path:        filepath.Join(geminiHome(), ".env"),
+			Description: "Gemini API key (.env file)",
+			Required:    false,
+		},
 	}
 }
 
@@ -287,10 +292,16 @@ func (p *Provider) loginWithVertexADC(ctx context.Context, prof *profile.Profile
 
 // Logout clears authentication credentials.
 func (p *Provider) Logout(ctx context.Context, prof *profile.Profile) error {
-	// For OAuth mode, remove cached credentials
-	envPath := filepath.Join(prof.HomePath(), ".gemini", ".env")
-	if err := os.Remove(envPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove .env: %w", err)
+	geminiDir := filepath.Join(prof.HomePath(), ".gemini")
+	paths := []string{
+		filepath.Join(geminiDir, ".env"),
+		filepath.Join(geminiDir, "settings.json"),
+		filepath.Join(geminiDir, "oauth_credentials.json"),
+	}
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", filepath.Base(path), err)
+		}
 	}
 
 	// For Vertex mode, revoke ADC
@@ -319,6 +330,8 @@ func (p *Provider) Status(ctx context.Context, prof *profile.Profile) (*provider
 		envPath := filepath.Join(prof.HomePath(), ".gemini", ".env")
 		if _, err := os.Stat(envPath); err == nil {
 			status.LoggedIn = true
+		} else if os.Getenv("GEMINI_API_KEY") != "" {
+			status.LoggedIn = true
 		}
 	case provider.AuthModeVertexADC:
 		// Check for ADC credentials
@@ -328,8 +341,11 @@ func (p *Provider) Status(ctx context.Context, prof *profile.Profile) (*provider
 		}
 	default:
 		// Check for cached Google login tokens
-		configPath := filepath.Join(prof.HomePath(), ".config")
-		if _, err := os.Stat(configPath); err == nil {
+		settingsPath := filepath.Join(prof.HomePath(), ".gemini", "settings.json")
+		oauthPath := filepath.Join(prof.HomePath(), ".gemini", "oauth_credentials.json")
+		if _, err := os.Stat(settingsPath); err == nil {
+			status.LoggedIn = true
+		} else if _, err := os.Stat(oauthPath); err == nil {
 			status.LoggedIn = true
 		}
 	}
@@ -400,82 +416,98 @@ func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
 	}
 
 	// Define locations to check
-	locations := []struct {
+	type authLocationSpec struct {
 		path        string
 		description string
 		validator   func(data []byte) (bool, string) // Custom validator
-	}{
-		{
-			path:        filepath.Join(homeDir, ".gemini", "settings.json"),
-			description: "Gemini CLI settings with Google OAuth state",
-			validator: func(data []byte) (bool, string) {
-				var parsed map[string]interface{}
-				if err := json.Unmarshal(data, &parsed); err != nil {
-					return false, fmt.Sprintf("invalid JSON: %v", err)
-				}
-				// Check for OAuth-related fields
-				if _, ok := parsed["oauth"]; ok {
-					return true, ""
-				}
-				if _, ok := parsed["credentials"]; ok {
-					return true, ""
-				}
-				// Accept any valid JSON settings file
-				return true, ""
-			},
-		},
-		{
-			path:        filepath.Join(homeDir, ".gemini", "oauth_credentials.json"),
-			description: "Gemini CLI OAuth credentials cache",
-			validator: func(data []byte) (bool, string) {
-				var parsed map[string]interface{}
-				if err := json.Unmarshal(data, &parsed); err != nil {
-					return false, fmt.Sprintf("invalid JSON: %v", err)
-				}
-				// Check for token fields
-				if _, ok := parsed["access_token"]; ok {
-					return true, ""
-				}
-				if _, ok := parsed["refresh_token"]; ok {
-					return true, ""
-				}
-				return false, "missing expected OAuth fields"
-			},
-		},
-		{
-			path:        filepath.Join(homeDir, ".gemini", ".env"),
-			description: "Gemini API key (.env file)",
-			validator: func(data []byte) (bool, string) {
-				content := string(data)
-				if len(content) > 0 {
-					// Check if it contains GEMINI_API_KEY
-					if contains(content, "GEMINI_API_KEY") {
+	}
+
+	buildLocations := func(baseDir, label string) []authLocationSpec {
+		suffix := ""
+		if label != "" {
+			suffix = " (" + label + ")"
+		}
+		return []authLocationSpec{
+			{
+				path:        filepath.Join(baseDir, "settings.json"),
+				description: "Gemini CLI settings with Google OAuth state" + suffix,
+				validator: func(data []byte) (bool, string) {
+					var parsed map[string]interface{}
+					if err := json.Unmarshal(data, &parsed); err != nil {
+						return false, fmt.Sprintf("invalid JSON: %v", err)
+					}
+					// Check for OAuth-related fields
+					if _, ok := parsed["oauth"]; ok {
 						return true, ""
 					}
-					return false, "missing GEMINI_API_KEY"
-				}
-				return false, "empty file"
-			},
-		},
-		{
-			path:        filepath.Join(xdgConfigHome(), "gcloud", "application_default_credentials.json"),
-			description: "Google Cloud Application Default Credentials (Vertex AI)",
-			validator: func(data []byte) (bool, string) {
-				var parsed map[string]interface{}
-				if err := json.Unmarshal(data, &parsed); err != nil {
-					return false, fmt.Sprintf("invalid JSON: %v", err)
-				}
-				// Check for ADC fields
-				if _, ok := parsed["client_id"]; ok {
+					if _, ok := parsed["credentials"]; ok {
+						return true, ""
+					}
+					// Accept any valid JSON settings file
 					return true, ""
-				}
-				if _, ok := parsed["type"]; ok {
-					return true, ""
-				}
-				return false, "missing expected ADC fields"
+				},
 			},
-		},
+			{
+				path:        filepath.Join(baseDir, "oauth_credentials.json"),
+				description: "Gemini CLI OAuth credentials cache" + suffix,
+				validator: func(data []byte) (bool, string) {
+					var parsed map[string]interface{}
+					if err := json.Unmarshal(data, &parsed); err != nil {
+						return false, fmt.Sprintf("invalid JSON: %v", err)
+					}
+					// Check for token fields
+					if _, ok := parsed["access_token"]; ok {
+						return true, ""
+					}
+					if _, ok := parsed["refresh_token"]; ok {
+						return true, ""
+					}
+					return false, "missing expected OAuth fields"
+				},
+			},
+			{
+				path:        filepath.Join(baseDir, ".env"),
+				description: "Gemini API key (.env file)" + suffix,
+				validator: func(data []byte) (bool, string) {
+					content := string(data)
+					if len(content) > 0 {
+						// Check if it contains GEMINI_API_KEY
+						if contains(content, "GEMINI_API_KEY") {
+							return true, ""
+						}
+						return false, "missing GEMINI_API_KEY"
+					}
+					return false, "empty file"
+				},
+			},
+		}
 	}
+
+	defaultGeminiHome := filepath.Join(homeDir, ".gemini")
+	locations := buildLocations(defaultGeminiHome, "")
+	if geminiHomeEnv := os.Getenv("GEMINI_HOME"); geminiHomeEnv != "" && geminiHomeEnv != defaultGeminiHome {
+		locations = append(buildLocations(geminiHomeEnv, "GEMINI_HOME"), locations...)
+	}
+
+	// Always check ADC location for Vertex AI
+	locations = append(locations, authLocationSpec{
+		path:        filepath.Join(xdgConfigHome(), "gcloud", "application_default_credentials.json"),
+		description: "Google Cloud Application Default Credentials (Vertex AI)",
+		validator: func(data []byte) (bool, string) {
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				return false, fmt.Sprintf("invalid JSON: %v", err)
+			}
+			// Check for ADC fields
+			if _, ok := parsed["client_id"]; ok {
+				return true, ""
+			}
+			if _, ok := parsed["type"]; ok {
+				return true, ""
+			}
+			return false, "missing expected ADC fields"
+		},
+	})
 
 	var mostRecent *provider.AuthLocation
 
@@ -671,13 +703,43 @@ func (p *Provider) ValidateToken(ctx context.Context, prof *profile.Profile, pas
 func (p *Provider) validateTokenPassive(ctx context.Context, prof *profile.Profile, result *provider.ValidationResult) (*provider.ValidationResult, error) {
 	result.Method = "passive"
 
+	authMode := provider.AuthMode(prof.AuthMode)
+
 	// Check auth files exist
 	geminiDir := filepath.Join(prof.HomePath(), ".gemini")
 	settingsPath := filepath.Join(geminiDir, "settings.json")
 	oauthPath := filepath.Join(geminiDir, "oauth_credentials.json")
+	envPath := filepath.Join(geminiDir, ".env")
 
 	settingsExists := fileExistsGemini(settingsPath)
 	oauthExists := fileExistsGemini(oauthPath)
+	envExists := fileExistsGemini(envPath)
+
+	// API key mode: accept .env or environment variable
+	if authMode == provider.AuthModeAPIKey {
+		if envExists {
+			data, err := os.ReadFile(envPath)
+			if err != nil {
+				result.Valid = false
+				result.Error = fmt.Sprintf("cannot read .env: %v", err)
+				return result, nil
+			}
+			if !contains(string(data), "GEMINI_API_KEY") {
+				result.Valid = false
+				result.Error = "GEMINI_API_KEY not found in .env"
+				return result, nil
+			}
+			result.Valid = true
+			return result, nil
+		}
+		if os.Getenv("GEMINI_API_KEY") != "" {
+			result.Valid = true
+			return result, nil
+		}
+		result.Valid = false
+		result.Error = "no API key configured"
+		return result, nil
+	}
 
 	if !settingsExists && !oauthExists {
 		result.Valid = false
@@ -757,8 +819,7 @@ func (p *Provider) validateTokenPassive(ctx context.Context, prof *profile.Profi
 		if _, hasOAuth := settingsData["oauth"]; !hasOAuth {
 			if _, hasAPIKey := settingsData["api_key"]; !hasAPIKey {
 				// Check for .env file with API key
-				envPath := filepath.Join(geminiDir, ".env")
-				if !fileExistsGemini(envPath) && !oauthExists {
+				if !envExists && !oauthExists && os.Getenv("GEMINI_API_KEY") == "" {
 					result.Valid = false
 					result.Error = "no authentication configured"
 					return result, nil

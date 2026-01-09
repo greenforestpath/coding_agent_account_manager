@@ -120,9 +120,9 @@ Each profile gets its own `$HOME` and `$CODEX_HOME` with symlinks to your real `
 
 | Tool | Auth Location | Login Command |
 |------|--------------|---------------|
-| **Claude Code** | `~/.claude.json` + `~/.config/claude-code/auth.json` | `/login` in CLI |
-| **Codex CLI** | `~/.codex/auth.json` | `codex login` |
-| **Gemini CLI** | `~/.gemini/settings.json` | Interactive prompt |
+| **Claude Code** | OAuth: `~/.claude.json` + `~/.config/claude-code/auth.json` • API key: `~/.claude/settings.json` | `/login` in CLI |
+| **Codex CLI** | `~/.codex/auth.json` (file store enforced) | `codex login` (or `--device-auth`) |
+| **Gemini CLI** | OAuth: `~/.gemini/settings.json` (+ `oauth_credentials.json`) • API key: `~/.gemini/.env` | `gemini` interactive |
 
 ### Claude Code (Claude Max)
 
@@ -131,6 +131,7 @@ Each profile gets its own `$HOME` and `$CODEX_HOME` with symlinks to your real `
 **Auth Files:**
 - `~/.claude.json` — Main authentication token
 - `~/.config/claude-code/auth.json` — Secondary auth data
+- `~/.claude/settings.json` — API key mode via `apiKeyHelper`
 
 **Login Command:** Inside Claude Code, type `/login`
 
@@ -143,9 +144,9 @@ Each profile gets its own `$HOME` and `$CODEX_HOME` with symlinks to your real `
 **Auth Files:**
 - `~/.codex/auth.json` (or `$CODEX_HOME/auth.json`)
 
-**Login Command:** `codex login`
+**Login Command:** `codex login` (or `codex login --device-auth` for headless)
 
-**Notes:** Respects `CODEX_HOME` environment variable for custom locations.
+**Notes:** Respects `CODEX_HOME`. CAAM enforces file-based auth storage by writing `cli_auth_credentials_store = "file"` to `~/.codex/config.toml` inside the profile.
 
 ### Gemini CLI (Google One AI Premium)
 
@@ -153,8 +154,10 @@ Each profile gets its own `$HOME` and `$CODEX_HOME` with symlinks to your real `
 
 **Auth Files:**
 - `~/.gemini/settings.json`
+- `~/.gemini/oauth_credentials.json` (OAuth cache)
+- `~/.gemini/.env` (API key mode)
 
-**Login Command:** Start `gemini`, select "Login with Google"
+**Login Command:** Start `gemini`, select "Login with Google" or use `/auth` to switch modes
 
 ---
 

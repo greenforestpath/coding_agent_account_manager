@@ -31,6 +31,7 @@ func TestAddCommandFlags(t *testing.T) {
 		{"no-activate", "false"},
 		{"timeout", "5m0s"},
 		{"force", "false"},
+		{"device-code", "false"},
 	}
 
 	for _, tt := range flags {
@@ -135,8 +136,8 @@ func TestRunToolLoginCommands(t *testing.T) {
 		wantArgs []string
 	}{
 		{"claude", "claude", nil},
-		{"codex", "codex", []string{"auth", "login"}},
-		{"gemini", "gemini", []string{"auth", "login"}},
+		{"codex", "codex", []string{"login"}},
+		{"gemini", "gemini", nil},
 	}
 
 	for _, tt := range tests {
@@ -152,15 +153,15 @@ func TestRunToolLoginCommands(t *testing.T) {
 				if tt.wantBin != "codex" {
 					t.Errorf("codex should use 'codex' binary")
 				}
-				if len(tt.wantArgs) != 2 || tt.wantArgs[0] != "auth" || tt.wantArgs[1] != "login" {
-					t.Errorf("codex should use 'auth login' args")
+				if len(tt.wantArgs) != 1 || tt.wantArgs[0] != "login" {
+					t.Errorf("codex should use 'login' args")
 				}
 			case "gemini":
 				if tt.wantBin != "gemini" {
 					t.Errorf("gemini should use 'gemini' binary")
 				}
-				if len(tt.wantArgs) != 2 || tt.wantArgs[0] != "auth" || tt.wantArgs[1] != "login" {
-					t.Errorf("gemini should use 'auth login' args")
+				if tt.wantArgs != nil {
+					t.Errorf("gemini should use no args")
 				}
 			}
 		})

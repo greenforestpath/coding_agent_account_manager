@@ -123,9 +123,9 @@ This creates unnecessary friction in the critical first-use experience.
 **What:** Detect existing auth files in standard locations for each provider.
 
 **Why:**
-- Claude: `~/.claude.json`, `~/.config/claude-code/auth.json`
-- Codex: `~/.codex/auth.json`
-- Gemini: `~/.gemini/settings.json`, `~/.gemini/oauth_credentials.json`
+- Claude: `~/.claude.json`, `~/.config/claude-code/auth.json`, `~/.claude/settings.json` (apiKeyHelper)
+- Codex: `~/.codex/auth.json` (file store enforced)
+- Gemini: `~/.gemini/settings.json`, `~/.gemini/oauth_credentials.json`, `~/.gemini/.env` (API key)
 - Detection enables import and status reporting
 
 **Design Decisions:**

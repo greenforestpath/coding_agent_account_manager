@@ -43,6 +43,9 @@ type AuthFileSpec struct {
 type AuthFileSet struct {
 	Tool  string
 	Files []AuthFileSpec
+	// AllowOptionalOnly permits auth states that rely solely on optional files
+	// (e.g., API key or helper-based auth that doesn't create OAuth artifacts).
+	AllowOptionalOnly bool
 }
 
 // CodexAuthFiles returns the auth files for Codex CLI.
@@ -95,7 +98,14 @@ func ClaudeAuthFiles() AuthFileSet {
 				Description: "Claude Code auth credentials",
 				Required:    false, // May not exist in all setups
 			},
+			{
+				Tool:        "claude",
+				Path:        filepath.Join(homeDir, ".claude", "settings.json"),
+				Description: "Claude Code settings (apiKeyHelper / API key mode)",
+				Required:    false,
+			},
 		},
+		AllowOptionalOnly: true,
 	}
 }
 
@@ -126,7 +136,14 @@ func GeminiAuthFiles() AuthFileSet {
 				Description: "Gemini CLI OAuth credentials cache",
 				Required:    false,
 			},
+			{
+				Tool:        "gemini",
+				Path:        filepath.Join(geminiHome, ".env"),
+				Description: "Gemini API key (.env file)",
+				Required:    false,
+			},
 		},
+		AllowOptionalOnly: true,
 	}
 }
 
@@ -213,11 +230,14 @@ func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
 	}
 
 	backedUp := 0
+	requiredFound := false
+	optionalFound := false
+	var missingRequired []string
 	var originalPaths []string
 	for _, spec := range fileSet.Files {
 		if _, err := os.Stat(spec.Path); os.IsNotExist(err) {
 			if spec.Required {
-				return fmt.Errorf("required auth file not found: %s", spec.Path)
+				missingRequired = append(missingRequired, spec.Path)
 			}
 			continue // Skip optional files that don't exist
 		}
@@ -230,11 +250,21 @@ func (v *Vault) Backup(fileSet AuthFileSet, profile string) error {
 			return fmt.Errorf("backup %s: %w", spec.Path, err)
 		}
 		backedUp++
+		if spec.Required {
+			requiredFound = true
+		} else {
+			optionalFound = true
+		}
 		originalPaths = append(originalPaths, spec.Path)
 	}
 
 	if backedUp == 0 {
 		return fmt.Errorf("no auth files found to backup for %s", tool)
+	}
+	if len(missingRequired) > 0 {
+		if !(fileSet.AllowOptionalOnly && !requiredFound && optionalFound) {
+			return fmt.Errorf("required auth file not found: %s", missingRequired[0])
+		}
 	}
 
 	// Write metadata
@@ -325,7 +355,7 @@ func (v *Vault) HasOriginalBackup(tool string) (bool, error) {
 // Returns the backup profile name (e.g., "_backup_20251217_143022") if created,
 // or empty string if there was nothing to back up.
 func (v *Vault) BackupCurrent(fileSet AuthFileSet) (string, error) {
-	// Only back up when at least one required auth file exists.
+	// Only back up when at least one auth file exists.
 	if !HasAuthFiles(fileSet) {
 		return "", nil
 	}
@@ -401,7 +431,7 @@ func (v *Vault) BackupOriginal(fileSet AuthFileSet) (bool, error) {
 		return false, nil
 	}
 
-	// Only back up when at least one required auth file exists.
+	// Only back up when at least one auth file exists.
 	if !HasAuthFiles(fileSet) {
 		return false, nil
 	}
@@ -432,6 +462,9 @@ func (v *Vault) Restore(fileSet AuthFileSet, profile string) error {
 	}
 
 	restored := 0
+	requiredFound := false
+	optionalFound := false
+	var missingRequired []string
 	for _, spec := range fileSet.Files {
 		filename := filepath.Base(spec.Path)
 		srcPath := filepath.Join(profileDir, filename)
@@ -439,7 +472,7 @@ func (v *Vault) Restore(fileSet AuthFileSet, profile string) error {
 		// Check if backup exists
 		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 			if spec.Required {
-				return fmt.Errorf("required backup not found: %s", srcPath)
+				missingRequired = append(missingRequired, srcPath)
 			}
 			continue // Skip optional files
 		}
@@ -454,10 +487,20 @@ func (v *Vault) Restore(fileSet AuthFileSet, profile string) error {
 			return fmt.Errorf("restore %s: %w", spec.Path, err)
 		}
 		restored++
+		if spec.Required {
+			requiredFound = true
+		} else {
+			optionalFound = true
+		}
 	}
 
 	if restored == 0 {
 		return fmt.Errorf("no auth files restored for %s/%s", fileSet.Tool, profile)
+	}
+	if len(missingRequired) > 0 {
+		if !(fileSet.AllowOptionalOnly && !requiredFound && optionalFound) {
+			return fmt.Errorf("required backup not found: %s", missingRequired[0])
+		}
 	}
 
 	return nil
@@ -583,12 +626,17 @@ func (v *Vault) ActiveProfile(fileSet AuthFileSet) (string, error) {
 
 // HasAuthFiles checks if the tool currently has auth files present.
 func HasAuthFiles(fileSet AuthFileSet) bool {
+	optionalFound := false
 	for _, spec := range fileSet.Files {
-		if spec.Required {
-			if _, err := os.Stat(spec.Path); err == nil {
+		if _, err := os.Stat(spec.Path); err == nil {
+			if spec.Required {
 				return true
 			}
+			optionalFound = true
 		}
+	}
+	if fileSet.AllowOptionalOnly && optionalFound {
+		return true
 	}
 	return false
 }

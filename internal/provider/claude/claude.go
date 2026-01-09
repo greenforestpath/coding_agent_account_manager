@@ -98,6 +98,11 @@ func (p *Provider) AuthFiles() []provider.AuthFileSpec {
 			Description: "Claude Code auth credentials",
 			Required:    false, // May not exist in all setups
 		},
+		{
+			Path:        filepath.Join(homeDir, ".claude", "settings.json"),
+			Description: "Claude Code settings (apiKeyHelper / API key mode)",
+			Required:    false,
+		},
 	}
 }
 
@@ -291,6 +296,7 @@ func (p *Provider) Logout(ctx context.Context, prof *profile.Profile) error {
 	authPaths := []string{
 		filepath.Join(prof.XDGConfigPath(), "claude-code", "auth.json"),
 		filepath.Join(prof.HomePath(), ".claude.json"),
+		filepath.Join(prof.HomePath(), ".claude", "settings.json"),
 	}
 
 	for _, path := range authPaths {
@@ -318,6 +324,15 @@ func (p *Provider) Status(ctx context.Context, prof *profile.Profile) (*provider
 	claudeJsonPath := filepath.Join(prof.HomePath(), ".claude.json")
 	if _, err := os.Stat(claudeJsonPath); err == nil {
 		status.LoggedIn = true
+	}
+
+	// API key mode can be configured via settings.json or env var
+	if !status.LoggedIn && provider.AuthMode(prof.AuthMode) == provider.AuthModeAPIKey {
+		settingsPath := filepath.Join(prof.HomePath(), ".claude", "settings.json")
+		hasKey, err := claudeSettingsHasAPIKey(settingsPath)
+		if err == nil && hasKey {
+			status.LoggedIn = true
+		}
 	}
 
 	return status, nil
@@ -385,6 +400,10 @@ func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
 			path:        filepath.Join(xdgConfigHome(), "claude-code", "auth.json"),
 			description: "Claude Code auth credentials (current location)",
 		},
+		{
+			path:        filepath.Join(homeDir, ".claude", "settings.json"),
+			description: "Claude Code settings (apiKeyHelper / API key mode)",
+		},
 	}
 
 	var mostRecent *provider.AuthLocation
@@ -420,7 +439,8 @@ func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
 				authLoc.ValidationError = fmt.Sprintf("invalid JSON: %v", err)
 			} else {
 				// Check for expected fields based on file type
-				if filepath.Base(loc.path) == ".claude.json" {
+				switch filepath.Base(loc.path) {
+				case ".claude.json":
 					// Check for oauthToken or similar
 					if _, ok := parsed["oauthToken"]; ok {
 						authLoc.IsValid = true
@@ -429,7 +449,17 @@ func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
 					} else {
 						authLoc.ValidationError = "missing expected OAuth fields"
 					}
-				} else {
+				case "settings.json":
+					if _, ok := parsed["apiKeyHelper"]; ok {
+						authLoc.IsValid = true
+					} else if _, ok := parsed["apiKey"]; ok {
+						authLoc.IsValid = true
+					} else if _, ok := parsed["api_key"]; ok {
+						authLoc.IsValid = true
+					} else {
+						authLoc.IsValid = true // Accept valid settings JSON
+					}
+				default:
 					// auth.json - check for typical auth fields
 					if _, ok := parsed["accessToken"]; ok {
 						authLoc.IsValid = true
@@ -491,6 +521,18 @@ func (p *Provider) ImportAuth(ctx context.Context, sourcePath string, prof *prof
 		targetPath := filepath.Join(prof.HomePath(), ".claude.json")
 		if err := copyFile(sourcePath, targetPath); err != nil {
 			return nil, fmt.Errorf("copy .claude.json: %w", err)
+		}
+		copiedFiles = append(copiedFiles, targetPath)
+
+	case "settings.json":
+		// Copy to profile's .claude directory
+		targetDir := filepath.Join(prof.HomePath(), ".claude")
+		if err := os.MkdirAll(targetDir, 0700); err != nil {
+			return nil, fmt.Errorf("create .claude dir: %w", err)
+		}
+		targetPath := filepath.Join(targetDir, "settings.json")
+		if err := copyFile(sourcePath, targetPath); err != nil {
+			return nil, fmt.Errorf("copy settings.json: %w", err)
 		}
 		copiedFiles = append(copiedFiles, targetPath)
 
@@ -599,11 +641,29 @@ func (p *Provider) validateTokenPassive(ctx context.Context, prof *profile.Profi
 	// Check auth files exist
 	claudeJsonPath := filepath.Join(prof.HomePath(), ".claude.json")
 	authJsonPath := filepath.Join(prof.XDGConfigPath(), "claude-code", "auth.json")
+	settingsPath := filepath.Join(prof.HomePath(), ".claude", "settings.json")
 
 	claudeJsonExists := fileExists(claudeJsonPath)
 	authJsonExists := fileExists(authJsonPath)
+	settingsExists := fileExists(settingsPath)
 
 	if !claudeJsonExists && !authJsonExists {
+		if provider.AuthMode(prof.AuthMode) == provider.AuthModeAPIKey {
+			hasKey, err := claudeSettingsHasAPIKey(settingsPath)
+			if err != nil && settingsExists {
+				result.Valid = false
+				result.Error = fmt.Sprintf("invalid settings.json: %v", err)
+				return result, nil
+			}
+			if hasKey {
+				result.Valid = true
+				return result, nil
+			}
+			result.Valid = false
+			result.Error = "no API key settings found"
+			return result, nil
+		}
+
 		result.Valid = false
 		result.Error = "no auth files found"
 		return result, nil
@@ -691,6 +751,21 @@ func (p *Provider) validateTokenPassive(ctx context.Context, prof *profile.Profi
 		}
 	}
 
+	// For API key mode, validate settings.json if present
+	if provider.AuthMode(prof.AuthMode) == provider.AuthModeAPIKey && settingsExists {
+		hasKey, err := claudeSettingsHasAPIKey(settingsPath)
+		if err != nil {
+			result.Valid = false
+			result.Error = fmt.Sprintf("invalid settings.json: %v", err)
+			return result, nil
+		}
+		if !hasKey {
+			result.Valid = false
+			result.Error = "no API key configured in settings.json"
+			return result, nil
+		}
+	}
+
 	// If we got here, passive validation passed
 	result.Valid = true
 	return result, nil
@@ -730,6 +805,29 @@ func (p *Provider) validateTokenActive(ctx context.Context, prof *profile.Profil
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func claudeSettingsHasAPIKey(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return false, err
+	}
+
+	if _, ok := parsed["apiKeyHelper"]; ok {
+		return true, nil
+	}
+	if _, ok := parsed["apiKey"]; ok {
+		return true, nil
+	}
+	if _, ok := parsed["api_key"]; ok {
+		return true, nil
+	}
+	return false, nil
 }
 
 func parseExpiryTime(s string) (time.Time, error) {

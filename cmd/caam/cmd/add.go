@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
+	codexprovider "github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider/codex"
 )
 
 var addCmd = &cobra.Command{
@@ -32,6 +33,7 @@ This command streamlines adding a new account:
 Examples:
   caam add claude              # Interactive - prompts for profile name
   caam add claude work-2       # Pre-specify profile name
+  caam add codex --device-code # Device code flow (headless)
   caam add codex --no-activate # Don't activate after adding
   caam add gemini --timeout 5m # Custom timeout for login flow`,
 	Args: cobra.RangeArgs(1, 2),
@@ -43,6 +45,7 @@ func init() {
 	addCmd.Flags().Bool("no-activate", false, "don't activate the new profile after adding")
 	addCmd.Flags().Duration("timeout", 5*time.Minute, "timeout for login flow completion")
 	addCmd.Flags().Bool("force", false, "skip confirmation prompts")
+	addCmd.Flags().Bool("device-code", false, "use device code flow for codex (headless)")
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
@@ -50,6 +53,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	noActivate, _ := cmd.Flags().GetBool("no-activate")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	force, _ := cmd.Flags().GetBool("force")
+	deviceCode, _ := cmd.Flags().GetBool("device-code")
 
 	getFileSet, ok := tools[tool]
 	if !ok {
@@ -129,7 +133,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	done := make(chan error, 1)
 
 	go func() {
-		done <- runToolLogin(ctx, tool)
+		done <- runToolLogin(ctx, tool, deviceCode)
 	}()
 
 	select {
@@ -214,7 +218,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 }
 
 // runToolLogin launches the tool's login command.
-func runToolLogin(ctx context.Context, tool string) error {
+func runToolLogin(ctx context.Context, tool string, deviceCode bool) error {
 	var cmd *exec.Cmd
 
 	switch tool {
@@ -222,11 +226,17 @@ func runToolLogin(ctx context.Context, tool string) error {
 		// Claude uses interactive login
 		cmd = exec.CommandContext(ctx, "claude")
 	case "codex":
-		// Codex uses `codex auth login`
-		cmd = exec.CommandContext(ctx, "codex", "auth", "login")
+		if err := codexprovider.EnsureFileCredentialStore(codexprovider.ResolveHome()); err != nil {
+			return fmt.Errorf("configure codex credential store: %w", err)
+		}
+		cmdArgs := []string{"login"}
+		if deviceCode {
+			cmdArgs = append(cmdArgs, "--device-auth")
+		}
+		cmd = exec.CommandContext(ctx, "codex", cmdArgs...)
 	case "gemini":
-		// Gemini uses `gemini auth login`
-		cmd = exec.CommandContext(ctx, "gemini", "auth", "login")
+		// Gemini uses interactive login
+		cmd = exec.CommandContext(ctx, "gemini")
 	default:
 		return fmt.Errorf("unsupported tool: %s", tool)
 	}

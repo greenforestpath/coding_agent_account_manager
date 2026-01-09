@@ -445,9 +445,9 @@ Options considered:
 ## Appendix: Provider OAuth Details
 
 ### Claude Code
-- Auth file: `~/.claude/oauth.json` (or provider-specific path)
+- Auth files: `~/.claude.json`, `~/.config/claude-code/auth.json`
+- API key mode: `~/.claude/settings.json` (apiKeyHelper)
 - Token endpoint: TBD (need to reverse engineer)
-- Refresh token: Stored in oauth.json
 
 ### OpenAI Codex
 - Auth file: `~/.codex/auth.json`
@@ -463,7 +463,9 @@ Options considered:
 ```
 
 ### Google Gemini
-- Auth file: `~/.config/gcloud/application_default_credentials.json`
+- Auth files: `~/.gemini/settings.json`, `~/.gemini/oauth_credentials.json`
+- API key mode: `~/.gemini/.env`
+- Vertex AI ADC: `~/.config/gcloud/application_default_credentials.json`
 - Token endpoint: `https://oauth2.googleapis.com/token`
 - Request format: Form-encoded
 ```

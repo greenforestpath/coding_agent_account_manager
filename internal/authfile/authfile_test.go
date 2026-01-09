@@ -853,6 +853,26 @@ func TestHasAuthFiles(t *testing.T) {
 			t.Error("HasAuthFiles() = true, want false (no required files)")
 		}
 	})
+
+	t.Run("accepts optional files when allowed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		optionalPath := filepath.Join(tmpDir, "optional.json")
+		if err := os.WriteFile(optionalPath, []byte("{}"), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		fileSet := AuthFileSet{
+			Tool: "testtool",
+			Files: []AuthFileSpec{
+				{Tool: "testtool", Path: optionalPath, Required: false},
+			},
+			AllowOptionalOnly: true,
+		}
+
+		if !HasAuthFiles(fileSet) {
+			t.Error("HasAuthFiles() = false, want true (optional files allowed)")
+		}
+	})
 }
 
 func TestClearAuthFiles(t *testing.T) {

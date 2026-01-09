@@ -84,12 +84,12 @@ func TestSupportedAuthModes(t *testing.T) {
 // =============================================================================
 
 func TestAuthFiles(t *testing.T) {
-	t.Run("returns two auth file specs", func(t *testing.T) {
+	t.Run("returns three auth file specs", func(t *testing.T) {
 		p := New()
 		files := p.AuthFiles()
 
-		if len(files) != 2 {
-			t.Fatalf("AuthFiles() returned %d files, want 2", len(files))
+		if len(files) != 3 {
+			t.Fatalf("AuthFiles() returned %d files, want 3", len(files))
 		}
 	})
 
@@ -116,6 +116,19 @@ func TestAuthFiles(t *testing.T) {
 		}
 		if file.Required {
 			t.Error("claude-code/auth.json should be optional")
+		}
+	})
+
+	t.Run("third file is settings.json and optional", func(t *testing.T) {
+		p := New()
+		files := p.AuthFiles()
+
+		file := files[2]
+		if !strings.HasSuffix(file.Path, filepath.Join(".claude", "settings.json")) {
+			t.Errorf("AuthFiles()[2].Path = %q, should end with .claude/settings.json", file.Path)
+		}
+		if file.Required {
+			t.Error(".claude/settings.json should be optional")
 		}
 	})
 
@@ -817,6 +830,24 @@ func TestAPIKeyModeLifecycle(t *testing.T) {
 	}
 	if !strings.Contains(string(settingsData), helperPath) {
 		t.Error("settings.json should reference the helper script path")
+	}
+
+	// Status should report logged in for API key mode
+	status, err := p.Status(context.Background(), prof)
+	if err != nil {
+		t.Fatalf("Status() error = %v", err)
+	}
+	if !status.LoggedIn {
+		t.Error("Status() should report logged in when apiKeyHelper is configured")
+	}
+
+	// Passive validation should pass for API key mode
+	result, err := p.ValidateToken(context.Background(), prof, true)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("ValidateToken() should be valid, got error: %s", result.Error)
 	}
 
 	// Validate should pass

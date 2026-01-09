@@ -90,12 +90,12 @@ func TestSupportedAuthModes(t *testing.T) {
 // =============================================================================
 
 func TestAuthFiles(t *testing.T) {
-	t.Run("returns two auth file specs", func(t *testing.T) {
+	t.Run("returns three auth file specs", func(t *testing.T) {
 		p := New()
 		files := p.AuthFiles()
 
-		if len(files) != 2 {
-			t.Fatalf("AuthFiles() returned %d files, want 2", len(files))
+		if len(files) != 3 {
+			t.Fatalf("AuthFiles() returned %d files, want 3", len(files))
 		}
 	})
 
@@ -122,6 +122,19 @@ func TestAuthFiles(t *testing.T) {
 		}
 		if file.Required {
 			t.Error("oauth_credentials.json should be optional")
+		}
+	})
+
+	t.Run("third file is .env and optional", func(t *testing.T) {
+		p := New()
+		files := p.AuthFiles()
+
+		file := files[2]
+		if !strings.HasSuffix(file.Path, filepath.Join(".gemini", ".env")) {
+			t.Errorf("AuthFiles()[2].Path = %q, should end with .gemini/.env", file.Path)
+		}
+		if file.Required {
+			t.Error(".env should be optional")
 		}
 	})
 
@@ -526,7 +539,7 @@ func TestStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("OAuth mode: logged in when .config exists", func(t *testing.T) {
+	t.Run("OAuth mode: logged in when settings.json exists", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		prof := &profile.Profile{
 			Name:     "test",
@@ -538,9 +551,12 @@ func TestStatus(t *testing.T) {
 		p := New()
 		p.PrepareProfile(context.Background(), prof)
 
-		// Create .config directory
-		configPath := filepath.Join(prof.HomePath(), ".config")
-		if err := os.MkdirAll(configPath, 0700); err != nil {
+		// Create settings.json
+		geminiDir := filepath.Join(prof.HomePath(), ".gemini")
+		if err := os.MkdirAll(geminiDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(`{"oauth": {}}`), 0600); err != nil {
 			t.Fatal(err)
 		}
 
@@ -549,11 +565,11 @@ func TestStatus(t *testing.T) {
 			t.Fatalf("Status() error = %v", err)
 		}
 		if !status.LoggedIn {
-			t.Error("LoggedIn should be true for OAuth when .config exists")
+			t.Error("LoggedIn should be true for OAuth when settings.json exists")
 		}
 	})
 
-	t.Run("OAuth mode: not logged in when .config missing", func(t *testing.T) {
+	t.Run("OAuth mode: not logged in when settings.json missing", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		prof := &profile.Profile{
 			Name:     "test",
@@ -570,7 +586,7 @@ func TestStatus(t *testing.T) {
 			t.Fatalf("Status() error = %v", err)
 		}
 		if status.LoggedIn {
-			t.Error("LoggedIn should be false for OAuth when .config missing")
+			t.Error("LoggedIn should be false for OAuth when settings.json missing")
 		}
 	})
 
@@ -757,14 +773,19 @@ func TestFullOAuthLifecycle(t *testing.T) {
 		t.Error("should not be logged in before login")
 	}
 
-	// Simulate login by creating .config
-	configPath := filepath.Join(prof.HomePath(), ".config")
-	os.MkdirAll(configPath, 0700)
+	// Simulate login by creating settings.json
+	geminiDir := filepath.Join(prof.HomePath(), ".gemini")
+	if err := os.MkdirAll(geminiDir, 0700); err != nil {
+		t.Fatalf("mkdir .gemini: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(geminiDir, "settings.json"), []byte(`{"oauth": {}}`), 0600); err != nil {
+		t.Fatalf("write settings.json: %v", err)
+	}
 
 	// Status (now logged in)
 	status, _ = p.Status(context.Background(), prof)
 	if !status.LoggedIn {
-		t.Error("should be logged in after .config created")
+		t.Error("should be logged in after settings.json created")
 	}
 
 	// Get env
@@ -773,9 +794,14 @@ func TestFullOAuthLifecycle(t *testing.T) {
 		t.Error("HOME should be set")
 	}
 
-	// Logout (cleans up .env but doesn't remove .config)
+	// Logout (cleans up cached auth files)
 	if err := p.Logout(context.Background(), prof); err != nil {
 		t.Fatalf("Logout() error = %v", err)
+	}
+
+	// settings.json should be removed after logout
+	if _, err := os.Stat(filepath.Join(geminiDir, "settings.json")); !os.IsNotExist(err) {
+		t.Error("settings.json should be removed after logout")
 	}
 }
 
@@ -816,6 +842,15 @@ func TestFullAPIKeyLifecycle(t *testing.T) {
 		t.Error("should be logged in after .env created")
 	}
 
+	// Passive validation should pass
+	result, err := p.ValidateToken(context.Background(), prof, true)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("ValidateToken() should be valid, got error: %s", result.Error)
+	}
+
 	// Logout
 	if err := p.Logout(context.Background(), prof); err != nil {
 		t.Fatalf("Logout() error = %v", err)
@@ -825,6 +860,36 @@ func TestFullAPIKeyLifecycle(t *testing.T) {
 	status, _ = p.Status(context.Background(), prof)
 	if status.LoggedIn {
 		t.Error("should not be logged in after logout")
+	}
+}
+
+func TestOAuthValidateTokenIgnoresAPIKeyEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "oauth-validate",
+		Provider: "gemini",
+		AuthMode: string(provider.AuthModeOAuth),
+		BasePath: tmpDir,
+	}
+
+	p := New()
+
+	if err := p.PrepareProfile(context.Background(), prof); err != nil {
+		t.Fatalf("PrepareProfile() error = %v", err)
+	}
+
+	// Create .env without OAuth files
+	envPath := filepath.Join(prof.HomePath(), ".gemini", ".env")
+	if err := os.WriteFile(envPath, []byte("GEMINI_API_KEY=test-key-12345"), 0600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	result, err := p.ValidateToken(context.Background(), prof, true)
+	if err != nil {
+		t.Fatalf("ValidateToken() error = %v", err)
+	}
+	if result.Valid {
+		t.Error("ValidateToken() should be invalid for OAuth mode when only API key is configured")
 	}
 }
 

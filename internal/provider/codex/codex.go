@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -75,6 +76,53 @@ func codexHome() string {
 	return filepath.Join(homeDir, ".codex")
 }
 
+// ResolveHome returns the current Codex home directory.
+func ResolveHome() string {
+	return codexHome()
+}
+
+var codexCredentialsStoreRe = regexp.MustCompile(`(?m)^\s*cli_auth_credentials_store\s*=\s*\"[^\"]*\"\s*$`)
+
+// EnsureFileCredentialStore ensures Codex uses file-based credential storage.
+// This is required for CAAM to manage auth.json reliably.
+func EnsureFileCredentialStore(home string) error {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return fmt.Errorf("codex home is empty")
+	}
+
+	configPath := filepath.Join(home, "config.toml")
+	const settingLine = `cli_auth_credentials_store = "file"`
+
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(home, 0700); err != nil {
+			return fmt.Errorf("create codex home: %w", err)
+		}
+		content := "# Managed by caam to ensure file-based auth storage\n" + settingLine + "\n"
+		return os.WriteFile(configPath, []byte(content), 0600)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config.toml: %w", err)
+	}
+
+	if match := codexCredentialsStoreRe.Find(data); match != nil {
+		if strings.Contains(string(match), `"file"`) {
+			return nil
+		}
+		updated := codexCredentialsStoreRe.ReplaceAll(data, []byte(settingLine))
+		return os.WriteFile(configPath, updated, 0600)
+	}
+
+	text := string(data)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	text += settingLine + "\n"
+	return os.WriteFile(configPath, []byte(text), 0600)
+}
+
 // AuthFiles returns the auth file specifications for Codex.
 // This is the key method for auth file backup/restore.
 func (p *Provider) AuthFiles() []provider.AuthFileSpec {
@@ -93,6 +141,9 @@ func (p *Provider) PrepareProfile(ctx context.Context, prof *profile.Profile) er
 	codexHomePath := prof.CodexHomePath()
 	if err := os.MkdirAll(codexHomePath, 0700); err != nil {
 		return fmt.Errorf("create codex_home: %w", err)
+	}
+	if err := EnsureFileCredentialStore(codexHomePath); err != nil {
+		return fmt.Errorf("configure codex credential store: %w", err)
 	}
 
 	// Create pseudo-home directory
@@ -125,6 +176,9 @@ func (p *Provider) Env(ctx context.Context, prof *profile.Profile) (map[string]s
 
 // Login initiates the authentication flow.
 func (p *Provider) Login(ctx context.Context, prof *profile.Profile) error {
+	if err := EnsureFileCredentialStore(prof.CodexHomePath()); err != nil {
+		return fmt.Errorf("configure codex credential store: %w", err)
+	}
 	switch provider.AuthMode(prof.AuthMode) {
 	case provider.AuthModeDeviceCode:
 		return p.LoginWithDeviceCode(ctx, prof)
