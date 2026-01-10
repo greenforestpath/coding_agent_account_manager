@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authpool"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/refresh"
@@ -38,6 +39,14 @@ type Config struct {
 
 	// LogPath is the path to write daemon logs (empty for stdout).
 	LogPath string
+
+	// UseAuthPool enables the new AuthPool-based token monitoring.
+	// When enabled, the daemon uses authpool.Monitor for proactive refresh.
+	UseAuthPool bool
+
+	// MaxConcurrentRefreshes limits concurrent refresh operations when using AuthPool.
+	// Default: 3
+	MaxConcurrentRefreshes int
 }
 
 // DefaultConfig returns the default daemon configuration.
@@ -59,6 +68,12 @@ type Daemon struct {
 
 	// backupScheduler handles automatic backups (may be nil if disabled)
 	backupScheduler *BackupScheduler
+
+	// authPool manages pooled profile states (may be nil if not enabled)
+	authPool *authpool.AuthPool
+
+	// poolMonitor runs the background token monitoring (may be nil if not enabled)
+	poolMonitor *authpool.Monitor
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -84,6 +99,11 @@ type Stats struct {
 	BackupCount     int64
 	BackupErrors    int64
 	BackupEnabled   bool
+
+	// Pool stats (when UseAuthPool is enabled)
+	PoolEnabled       bool
+	PoolMonitorActive bool
+	PoolSummary       *authpool.PoolSummary
 }
 
 // New creates a new daemon instance.
@@ -119,7 +139,71 @@ func New(vault *authfile.Vault, healthStore *health.Storage, cfg *Config) *Daemo
 		}
 	}
 
+	// Initialize auth pool if enabled
+	if cfg.UseAuthPool {
+		d.initAuthPool()
+	}
+
 	return d
+}
+
+// initAuthPool sets up the AuthPool and its monitor.
+func (d *Daemon) initAuthPool() {
+	// Create pool with callbacks for logging
+	d.authPool = authpool.NewAuthPool(
+		authpool.WithVault(d.vault),
+		authpool.WithRefreshThreshold(d.config.RefreshThreshold),
+		authpool.WithOnStateChange(func(profile *authpool.PooledProfile, oldStatus, newStatus authpool.PoolStatus) {
+			if d.config.Verbose {
+				d.logger.Printf("Pool: %s/%s status changed: %s -> %s",
+					profile.Provider, profile.ProfileName, oldStatus, newStatus)
+			}
+		}),
+	)
+
+	// Load existing state if available
+	stateOpts := authpool.PersistOptions{}
+	if err := d.authPool.Load(stateOpts); err != nil {
+		d.logger.Printf("Warning: failed to load pool state: %v", err)
+	}
+
+	// Create refresher
+	refresher := NewPoolRefresher(d.vault, d.healthStore)
+
+	// Configure monitor
+	maxConcurrent := d.config.MaxConcurrentRefreshes
+	if maxConcurrent <= 0 {
+		maxConcurrent = 3
+	}
+
+	monitorConfig := authpool.MonitorConfig{
+		CheckInterval:    d.config.CheckInterval,
+		RefreshThreshold: d.config.RefreshThreshold,
+		MaxConcurrent:    maxConcurrent,
+		OnRefreshStart: func(provider, profile string) {
+			if d.config.Verbose {
+				d.logger.Printf("Pool: starting refresh for %s/%s", provider, profile)
+			}
+		},
+		OnRefreshComplete: func(provider, profile string, newExpiry time.Time, err error) {
+			d.mu.Lock()
+			if err != nil {
+				d.stats.RefreshErrors++
+				d.mu.Unlock()
+				d.logger.Printf("Pool: %s/%s refresh failed: %v", provider, profile, err)
+			} else {
+				d.stats.RefreshCount++
+				d.mu.Unlock()
+				if d.config.Verbose {
+					d.logger.Printf("Pool: %s/%s refreshed, expires %v",
+						provider, profile, newExpiry.Format(time.RFC3339))
+				}
+			}
+		},
+	}
+
+	d.poolMonitor = authpool.NewMonitor(d.authPool, refresher, monitorConfig)
+	d.logger.Println("Auth pool initialized")
 }
 
 // Start begins the daemon's main loop.
@@ -136,6 +220,19 @@ func (d *Daemon) Start() error {
 
 	d.logger.Printf("Starting daemon (check interval: %v, refresh threshold: %v)",
 		d.config.CheckInterval, d.config.RefreshThreshold)
+
+	// Start pool monitor if enabled
+	if d.poolMonitor != nil {
+		// Load profiles from vault into the pool
+		if err := d.authPool.LoadFromVault(d.ctx); err != nil {
+			d.logger.Printf("Warning: failed to load profiles into pool: %v", err)
+		}
+		if err := d.poolMonitor.Start(d.ctx); err != nil {
+			d.logger.Printf("Warning: failed to start pool monitor: %v", err)
+		} else {
+			d.logger.Println("Pool monitor started")
+		}
+	}
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
@@ -167,6 +264,20 @@ func (d *Daemon) Stop() error {
 	}
 	d.running = false
 	d.mu.Unlock()
+
+	// Stop pool monitor if running
+	if d.poolMonitor != nil {
+		d.poolMonitor.Stop()
+		d.logger.Println("Pool monitor stopped")
+
+		// Save pool state
+		if d.authPool != nil {
+			stateOpts := authpool.PersistOptions{}
+			if err := d.authPool.Save(stateOpts); err != nil {
+				d.logger.Printf("Warning: failed to save pool state: %v", err)
+			}
+		}
+	}
 
 	if d.cancel != nil {
 		d.cancel()
@@ -218,7 +329,26 @@ func (d *Daemon) GetStats() Stats {
 		stats.NextBackup = d.backupScheduler.NextBackupTime()
 	}
 
+	// Add pool stats if enabled
+	if d.authPool != nil {
+		stats.PoolEnabled = true
+		if d.poolMonitor != nil {
+			stats.PoolMonitorActive = d.poolMonitor.IsRunning()
+		}
+		stats.PoolSummary = d.authPool.Summary()
+	}
+
 	return stats
+}
+
+// GetAuthPool returns the auth pool (may be nil if not enabled).
+func (d *Daemon) GetAuthPool() *authpool.AuthPool {
+	return d.authPool
+}
+
+// GetPoolMonitor returns the pool monitor (may be nil if not enabled).
+func (d *Daemon) GetPoolMonitor() *authpool.Monitor {
+	return d.poolMonitor
 }
 
 // runLoop is the main daemon loop.
