@@ -428,5 +428,8 @@ func TestUpdateGeminiHealth_NoExpiresIn(t *testing.T) {
 	if h == nil {
 		t.Fatal("health profile not created")
 	}
-	// TokenExpiresAt should be zero/unchanged when ExpiresIn is 0
+	// TokenExpiresAt should be zero when ExpiresIn is 0
+	if !h.TokenExpiresAt.IsZero() {
+		t.Errorf("TokenExpiresAt should be zero when ExpiresIn is 0, got %v", h.TokenExpiresAt)
+	}
 }
