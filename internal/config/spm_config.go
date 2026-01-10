@@ -353,7 +353,9 @@ func DefaultSPMConfig() *SPMConfig {
 				},
 			},
 		},
-		Subscriptions: nil, // User-configured
+		Subscriptions: map[string]SubscriptionConfig{
+			"gemini": {Plan: "ultra", MonthlyCost: 275},
+		},
 		Daemon: DaemonConfig{
 			AuthPool: AuthPoolConfig{
 				Enabled:              false, // Opt-in
