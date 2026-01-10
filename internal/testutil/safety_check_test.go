@@ -61,6 +61,7 @@ func TestNoRealHomeWrites(t *testing.T) {
 		"internal/passthrough/passthrough_test.go": true, // Only reads UserHomeDir for verification
 		"internal/testutil/safety_check_test.go":   true, // This file - contains patterns for detection
 		"internal/logs/claude_test.go":             true, // Uses t.TempDir(); UserHomeDir only for path verification
+		"internal/logs/codex_test.go":              true, // Uses t.TempDir(); UserHomeDir only for path verification
 		"internal/logs/gemini_test.go":             true, // Uses t.TempDir(); UserHomeDir only for path verification
 	}
 

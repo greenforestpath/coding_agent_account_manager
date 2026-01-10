@@ -14,6 +14,7 @@ import (
 )
 
 // captureRunOutput captures stdout from a function that prints to os.Stdout.
+// It safely restores stdout even if the function panics.
 func captureRunOutput(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 
@@ -29,14 +30,17 @@ func captureRunOutput(t *testing.T, fn func() error) (string, error) {
 	// Redirect stdout
 	os.Stdout = w
 
-	// Run function
-	runErr := fn()
+	// Run function with deferred cleanup to handle panics
+	var runErr error
+	func() {
+		defer func() {
+			w.Close()
+			os.Stdout = oldStdout
+		}()
+		runErr = fn()
+	}()
 
-	// Close writer and restore stdout
-	w.Close()
-	os.Stdout = oldStdout
-
-	// Read captured output
+	// Read captured output (safe now - stdout is restored)
 	var buf bytes.Buffer
 	buf.ReadFrom(r)
 	r.Close()
