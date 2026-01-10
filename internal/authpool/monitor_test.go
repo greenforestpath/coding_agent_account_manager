@@ -544,3 +544,13 @@ func TestMonitor_NoRefresher(t *testing.T) {
 		t.Error("should have error when no refresher configured")
 	}
 }
+
+func TestNewMonitor_NilPoolPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("NewMonitor with nil pool should panic")
+		}
+	}()
+
+	NewMonitor(nil, NewMockRefresher(), DefaultMonitorConfig())
+}

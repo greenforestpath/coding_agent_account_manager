@@ -59,7 +59,12 @@ type Monitor struct {
 }
 
 // NewMonitor creates a new token monitor.
+// Panics if pool is nil.
 func NewMonitor(pool *AuthPool, refresher Refresher, config MonitorConfig) *Monitor {
+	if pool == nil {
+		panic("authpool: NewMonitor called with nil pool")
+	}
+
 	if config.CheckInterval == 0 {
 		config.CheckInterval = time.Minute
 	}

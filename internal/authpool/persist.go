@@ -207,9 +207,13 @@ func (p *AuthPool) toPersistedState() *PersistedPoolState {
 }
 
 // fromPersistedState restores the AuthPool from a PersistedPoolState.
+// This clears any existing profiles and replaces them with the loaded state.
 func (p *AuthPool) fromPersistedState(state *PersistedPoolState) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	// Clear existing profiles before loading
+	p.profiles = make(map[string]*PooledProfile)
 
 	for key, persisted := range state.Profiles {
 		profile := &PooledProfile{

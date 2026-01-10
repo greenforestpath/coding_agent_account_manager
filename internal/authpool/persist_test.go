@@ -501,3 +501,51 @@ func TestSaveAndLoad_RoundTrip(t *testing.T) {
 		t.Errorf("LastUsed mismatch: got %v, want %v", loaded.LastUsed, profile.LastUsed)
 	}
 }
+
+func TestLoad_ClearsExistingProfiles(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "authpool_test")
+	if err != nil {
+		t.Fatalf("creating temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	statePath := filepath.Join(tmpDir, "state.json")
+	opts := PersistOptions{StatePath: statePath}
+
+	// Create and save pool with one profile
+	pool := NewAuthPool()
+	pool.AddProfile("claude", "saved")
+	pool.SetStatus("claude", "saved", PoolStatusReady)
+	if err := pool.Save(opts); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	// Create new pool with different profile
+	pool2 := NewAuthPool()
+	pool2.AddProfile("codex", "existing")
+	pool2.SetStatus("codex", "existing", PoolStatusReady)
+
+	if pool2.Count() != 1 {
+		t.Fatalf("pool2 should have 1 profile before Load, got %d", pool2.Count())
+	}
+
+	// Load should replace existing profiles
+	if err := pool2.Load(opts); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	// Should only have the loaded profile, not the pre-existing one
+	if pool2.Count() != 1 {
+		t.Errorf("pool2 should have 1 profile after Load, got %d", pool2.Count())
+	}
+
+	saved := pool2.GetProfile("claude", "saved")
+	if saved == nil {
+		t.Error("loaded profile 'saved' should exist")
+	}
+
+	existing := pool2.GetProfile("codex", "existing")
+	if existing != nil {
+		t.Error("pre-existing profile 'existing' should have been cleared by Load")
+	}
+}

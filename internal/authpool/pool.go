@@ -223,52 +223,99 @@ func (p *AuthPool) SetCooldown(provider, name string, duration time.Duration) {
 // ClearCooldown removes cooldown status from a profile.
 func (p *AuthPool) ClearCooldown(provider, name string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	key := profileKey(provider, name)
 	profile, ok := p.profiles[key]
 	if !ok {
+		p.mu.Unlock()
 		return
 	}
 
+	var shouldCallback bool
+	var clone *PooledProfile
 	if profile.Status == PoolStatusCooldown {
 		profile.Status = PoolStatusReady
 		profile.CooldownUntil = time.Time{}
+		if p.onStateChange != nil {
+			shouldCallback = true
+			clone = profile.Clone()
+		}
+	}
+	p.mu.Unlock()
+
+	// Fire callback outside lock
+	if shouldCallback {
+		go p.onStateChange(clone, PoolStatusCooldown, PoolStatusReady)
 	}
 }
 
 // UpdateTokenExpiry updates the token expiry time for a profile.
 func (p *AuthPool) UpdateTokenExpiry(provider, name string, expiry time.Time) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	key := profileKey(provider, name)
-	if profile, ok := p.profiles[key]; ok {
-		profile.TokenExpiry = expiry
-		profile.LastCheck = time.Now()
+	profile, ok := p.profiles[key]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
 
-		// Update status based on expiry
-		if profile.IsExpired() {
-			profile.Status = PoolStatusExpired
-		} else if profile.Status == PoolStatusExpired {
-			profile.Status = PoolStatusReady
-		}
+	oldStatus := profile.Status
+	profile.TokenExpiry = expiry
+	profile.LastCheck = time.Now()
+
+	// Update status based on expiry
+	if profile.IsExpired() {
+		profile.Status = PoolStatusExpired
+	} else if profile.Status == PoolStatusExpired {
+		profile.Status = PoolStatusReady
+	}
+
+	var shouldCallback bool
+	var clone *PooledProfile
+	if p.onStateChange != nil && oldStatus != profile.Status {
+		shouldCallback = true
+		clone = profile.Clone()
+	}
+	newStatus := profile.Status
+	p.mu.Unlock()
+
+	// Fire callback outside lock
+	if shouldCallback {
+		go p.onStateChange(clone, oldStatus, newStatus)
 	}
 }
 
 // MarkRefreshed marks a profile as successfully refreshed.
 func (p *AuthPool) MarkRefreshed(provider, name string, newExpiry time.Time) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	key := profileKey(provider, name)
-	if profile, ok := p.profiles[key]; ok {
-		profile.Status = PoolStatusReady
-		profile.TokenExpiry = newExpiry
-		profile.LastRefresh = time.Now()
-		profile.LastCheck = time.Now()
-		profile.ErrorCount = 0
-		profile.ErrorMessage = ""
+	profile, ok := p.profiles[key]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
+
+	oldStatus := profile.Status
+	profile.Status = PoolStatusReady
+	profile.TokenExpiry = newExpiry
+	profile.LastRefresh = time.Now()
+	profile.LastCheck = time.Now()
+	profile.ErrorCount = 0
+	profile.ErrorMessage = ""
+
+	var shouldCallback bool
+	var clone *PooledProfile
+	if p.onStateChange != nil && oldStatus != PoolStatusReady {
+		shouldCallback = true
+		clone = profile.Clone()
+	}
+	p.mu.Unlock()
+
+	// Fire callback outside lock
+	if shouldCallback {
+		go p.onStateChange(clone, oldStatus, PoolStatusReady)
 	}
 }
 
