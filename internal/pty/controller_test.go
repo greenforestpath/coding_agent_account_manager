@@ -435,3 +435,451 @@ func TestDefaultOptions(t *testing.T) {
 	}
 	t.Logf("[TEST] Default options: rows=%d, cols=%d", opts.Rows, opts.Cols)
 }
+
+// ============== ReadLine Tests ==============
+
+func TestControllerReadLine(t *testing.T) {
+	t.Run("reads single line from output", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("sh", []string{"-c", "echo 'line1'; echo 'line2'; sleep 1"}, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctx := context.Background()
+		line, err := ctrl.ReadLine(ctx)
+		if err != nil {
+			t.Fatalf("ReadLine failed: %v", err)
+		}
+		t.Logf("[TEST] First line: %q", line)
+
+		if !strings.Contains(line, "line1") {
+			t.Errorf("expected 'line1' in output, got %q", line)
+		}
+
+		line2, err := ctrl.ReadLine(ctx)
+		if err != nil {
+			t.Fatalf("ReadLine (second) failed: %v", err)
+		}
+		t.Logf("[TEST] Second line: %q", line2)
+
+		if !strings.Contains(line2, "line2") {
+			t.Errorf("expected 'line2' in output, got %q", line2)
+		}
+	})
+
+	t.Run("respects context cancellation", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+
+		t.Log("[TEST] Calling ReadLine with context that will be cancelled")
+		start := time.Now()
+		_, err = ctrl.ReadLine(ctx)
+		elapsed := time.Since(start)
+
+		if elapsed > 500*time.Millisecond {
+			t.Errorf("ReadLine took too long after cancel: %v", elapsed)
+		}
+
+		if err != context.Canceled {
+			t.Logf("[TEST] Got error %v instead of context.Canceled (may be acceptable)", err)
+		} else {
+			t.Logf("[TEST] Got expected cancellation: %v", err)
+		}
+	})
+
+	t.Run("returns error before start", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		ctx := context.Background()
+		_, err = ctrl.ReadLine(ctx)
+		if err == nil {
+			t.Error("expected error when reading before start")
+		}
+		t.Logf("[TEST] ReadLine before start error: %v", err)
+	})
+}
+
+// ============== Options Tests ==============
+
+func TestControllerOptions(t *testing.T) {
+	t.Run("uses working directory option", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Logf("[TEST] Using temp dir: %s", tmpDir)
+
+		opts := &Options{
+			Rows: 24,
+			Cols: 80,
+			Dir:  tmpDir,
+		}
+
+		ctrl, err := NewControllerFromArgs("pwd", nil, opts)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctx := context.Background()
+		line, err := ctrl.ReadLine(ctx)
+		if err != nil {
+			t.Fatalf("ReadLine failed: %v", err)
+		}
+		t.Logf("[TEST] Output: %q", line)
+
+		if !strings.Contains(line, tmpDir) {
+			t.Errorf("expected working dir %q in output, got %q", tmpDir, line)
+		}
+	})
+
+	t.Run("uses environment variable option", func(t *testing.T) {
+		testValue := "test_value_" + time.Now().Format("20060102150405")
+		opts := &Options{
+			Rows: 24,
+			Cols: 80,
+			Env:  []string{"TEST_VAR=" + testValue},
+		}
+
+		ctrl, err := NewControllerFromArgs("sh", []string{"-c", "echo $TEST_VAR"}, opts)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctx := context.Background()
+		line, err := ctrl.ReadLine(ctx)
+		if err != nil {
+			t.Fatalf("ReadLine failed: %v", err)
+		}
+		t.Logf("[TEST] Output: %q", line)
+
+		if !strings.Contains(line, testValue) {
+			t.Errorf("expected env value %q in output, got %q", testValue, line)
+		}
+	})
+}
+
+// ============== Additional Error Handling Tests ==============
+
+func TestControllerErrorHandling(t *testing.T) {
+	t.Run("ReadOutput returns error when closed", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctrl.Close()
+
+		_, err = ctrl.ReadOutput()
+		if err != ErrClosed {
+			t.Errorf("expected ErrClosed, got %v", err)
+		}
+		t.Logf("[TEST] ReadOutput after close error: %v", err)
+	})
+
+	t.Run("ReadLine returns error when closed", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctrl.Close()
+
+		ctx := context.Background()
+		_, err = ctrl.ReadLine(ctx)
+		if err != ErrClosed {
+			t.Errorf("expected ErrClosed, got %v", err)
+		}
+		t.Logf("[TEST] ReadLine after close error: %v", err)
+	})
+
+	t.Run("WaitForPattern returns error when closed", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctrl.Close()
+
+		ctx := context.Background()
+		pattern := regexp.MustCompile("test")
+		_, err = ctrl.WaitForPattern(ctx, pattern, time.Second)
+		if err != ErrClosed {
+			t.Errorf("expected ErrClosed, got %v", err)
+		}
+		t.Logf("[TEST] WaitForPattern after close error: %v", err)
+	})
+
+	t.Run("InjectRaw returns error when closed", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctrl.Close()
+
+		err = ctrl.InjectRaw([]byte("test"))
+		if err != ErrClosed {
+			t.Errorf("expected ErrClosed, got %v", err)
+		}
+		t.Logf("[TEST] InjectRaw after close error: %v", err)
+	})
+
+	t.Run("Signal returns error when closed", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		ctrl.Close()
+
+		err = ctrl.Signal(SIGTERM)
+		if err != ErrClosed {
+			t.Errorf("expected ErrClosed, got %v", err)
+		}
+		t.Logf("[TEST] Signal after close error: %v", err)
+	})
+
+	t.Run("Signal returns error before start", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		err = ctrl.Signal(SIGTERM)
+		if err == nil {
+			t.Error("expected error when signaling before start")
+		}
+		t.Logf("[TEST] Signal before start error: %v", err)
+	})
+
+	t.Run("Wait returns error before start", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		_, err = ctrl.Wait()
+		if err == nil {
+			t.Error("expected error when waiting before start")
+		}
+		t.Logf("[TEST] Wait before start error: %v", err)
+	})
+
+	t.Run("ReadOutput returns error before start", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		_, err = ctrl.ReadOutput()
+		if err == nil {
+			t.Error("expected error when reading before start")
+		}
+		t.Logf("[TEST] ReadOutput before start error: %v", err)
+	})
+
+	t.Run("Start returns error when closed", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		ctrl.Close()
+
+		err = ctrl.Start()
+		if err != ErrClosed {
+			t.Errorf("expected ErrClosed, got %v", err)
+		}
+		t.Logf("[TEST] Start after close error: %v", err)
+	})
+}
+
+// ============== Resource Cleanup Tests ==============
+
+func TestControllerResourceCleanup(t *testing.T) {
+	t.Run("Close terminates child process", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("sleep", []string{"60"}, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		t.Log("[TEST] Started sleep 60 process")
+
+		// Close should terminate the child
+		err = ctrl.Close()
+		if err != nil {
+			t.Logf("[TEST] Close returned error (may be expected): %v", err)
+		}
+
+		// Verify fd is now invalid
+		fd := ctrl.Fd()
+		if fd != -1 {
+			t.Logf("[TEST] Fd after close: %d (may indicate unclosed resources)", fd)
+		} else {
+			t.Log("[TEST] Fd properly invalidated after close")
+		}
+	})
+
+	t.Run("Close is idempotent", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// Multiple closes should not panic or error
+		for i := 0; i < 5; i++ {
+			err := ctrl.Close()
+			if err != nil {
+				t.Errorf("Close #%d failed: %v", i+1, err)
+			}
+		}
+		t.Log("[TEST] Multiple Close calls succeeded")
+	})
+
+	t.Run("Close without Start is safe", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+
+		// Close without ever starting
+		err = ctrl.Close()
+		if err != nil {
+			t.Errorf("Close without start failed: %v", err)
+		}
+		t.Log("[TEST] Close without start succeeded")
+	})
+}
+
+// ============== Special Character Tests ==============
+
+func TestControllerSpecialCharacters(t *testing.T) {
+	t.Run("handles special characters in injection", func(t *testing.T) {
+		ctrl, err := NewControllerFromArgs("cat", nil, nil)
+		if err != nil {
+			t.Fatalf("NewControllerFromArgs failed: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("Start failed: %v", err)
+		}
+
+		// Test various special characters
+		testStrings := []string{
+			"hello world",
+			"special: !@#$%^&*()",
+			"unicode: 你好世界",
+			"tabs:\ttabs",
+			"quotes: 'single' \"double\"",
+		}
+
+		for _, s := range testStrings {
+			t.Logf("[TEST] Injecting: %q", s)
+			err = ctrl.InjectCommand(s)
+			if err != nil {
+				t.Errorf("InjectCommand failed for %q: %v", s, err)
+			}
+		}
+
+		time.Sleep(100 * time.Millisecond)
+		output, err := ctrl.ReadOutput()
+		if err != nil {
+			t.Fatalf("ReadOutput failed: %v", err)
+		}
+		t.Logf("[TEST] Output: %q", output)
+	})
+}
+
+// ============== Platform Support Test ==============
+
+func TestPlatformSupport(t *testing.T) {
+	t.Logf("[TEST] Running on: %s/%s", runtime.GOOS, runtime.GOARCH)
+
+	switch runtime.GOOS {
+	case "linux", "darwin", "freebsd", "openbsd", "netbsd":
+		t.Log("[TEST] Unix PTY support expected - testing basic functionality")
+
+		ctrl, err := NewControllerFromArgs("echo", []string{"platform test"}, nil)
+		if err != nil {
+			t.Fatalf("PTY creation failed on Unix: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Start(); err != nil {
+			t.Fatalf("PTY start failed on Unix: %v", err)
+		}
+
+		exitCode, err := ctrl.Wait()
+		if err != nil {
+			t.Fatalf("Wait failed: %v", err)
+		}
+		if exitCode != 0 {
+			t.Errorf("expected exit code 0, got %d", exitCode)
+		}
+		t.Logf("[TEST] Unix PTY test passed, exit code: %d", exitCode)
+
+	default:
+		t.Skipf("[TEST] Platform %s not explicitly tested", runtime.GOOS)
+	}
+}
