@@ -193,8 +193,7 @@ func TestVaultBackup(t *testing.T) {
 			`profile"doublequoted"`,
 			// Spaces (word splitting)
 			"profile with spaces",
-			// Other special characters
-			"profile@email",
+			// Other special characters (@ is allowed for email-based names)
 			"profile#hashtag",
 			"profile$var",
 			"profile%mod",
@@ -222,6 +221,9 @@ func TestVaultBackup(t *testing.T) {
 			"with.period",
 			"MixedCase123",
 			"profile-1.backup_v2",
+			"alice@gmail.com",
+			"work@company.com",
+			"profile@email",
 		}
 
 		for _, name := range validNames {
