@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -413,12 +414,16 @@ func (w *Wrapper) runOnce(ctx context.Context, profile string) (int, bool, error
 // It buffers data to ensure rate limit patterns aren't missed when split
 // across multiple Write calls (e.g., "rate li" then "mit exceeded").
 type teeWriter struct {
+	mu       sync.Mutex
 	dest     io.Writer
 	detector *ratelimit.Detector
 	buffer   []byte
 }
 
 func (t *teeWriter) Write(p []byte) (n int, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	// Append to buffer for line-based pattern matching
 	t.buffer = append(t.buffer, p...)
 
@@ -448,6 +453,9 @@ func (t *teeWriter) Write(p []byte) (n int, err error) {
 // Flush checks any remaining buffered data for rate limit patterns.
 // Call this after the command completes.
 func (t *teeWriter) Flush() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	if len(t.buffer) > 0 {
 		t.detector.Check(string(t.buffer))
 		t.buffer = nil
@@ -512,6 +520,8 @@ func (w *Wrapper) recordSession(result *Result) {
 		session.Notes = fmt.Sprintf("retries: %d", result.RetryCount)
 	}
 
-	// Best effort - don't fail the wrap if recording fails
-	_ = w.db.RecordWrapSession(session)
+	// Best effort - log error if recording fails
+	if err := w.db.RecordWrapSession(session); err != nil {
+		fmt.Fprintf(w.config.Stderr, "warning: failed to record session stats: %v\n", err)
+	}
 }

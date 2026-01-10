@@ -232,6 +232,9 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 	if runErr != nil {
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
 			// Propagate the actual exit code, but first ensure we release the lock.
+			// Note: os.Exit terminates the process, bypassing any deferred calls in the caller.
+			// This is intended for the CLI entry point, but makes this package less suitable
+			// for library usage without handling this behavior.
 			if !opts.NoLock {
 				if err := opts.Profile.Unlock(); err != nil && !os.IsNotExist(err) {
 					fmt.Fprintf(os.Stderr, "warning: failed to unlock profile: %v\n", err)
