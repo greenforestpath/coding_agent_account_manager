@@ -194,6 +194,12 @@ func (s *Storage) UpdateProfile(provider, name string, health *ProfileHealth) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
+
 	store, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -211,6 +217,12 @@ func (s *Storage) DeleteProfile(provider, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
+
 	store, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -227,6 +239,12 @@ func (s *Storage) RecordError(provider, name string, errCause error) error {
 	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
 
 	store, err := s.loadLocked()
 	if err != nil {
@@ -256,6 +274,12 @@ func (s *Storage) ClearErrors(provider, name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
+
 	store, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -278,6 +302,12 @@ func (s *Storage) SetTokenExpiry(provider, name string, expiresAt time.Time) err
 	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
 
 	store, err := s.loadLocked()
 	if err != nil {
@@ -303,6 +333,12 @@ func (s *Storage) SetPlanType(provider, name, planType string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
+
 	store, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -326,6 +362,12 @@ func (s *Storage) DecayPenalties() error {
 	// Hold lock for entire read-modify-write cycle to prevent TOCTOU race
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	f, err := s.acquireFileLock()
+	if err != nil {
+		return err
+	}
+	defer s.releaseFileLock(f)
 
 	store, err := s.loadLocked()
 	if err != nil {
@@ -381,6 +423,26 @@ func (s *Storage) ListProfiles() (map[string]*ProfileHealth, error) {
 // Path returns the storage file path.
 func (s *Storage) Path() string {
 	return s.path
+}
+
+func (s *Storage) acquireFileLock() (*os.File, error) {
+	lockPath := s.path + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+	if err := lockFile(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("lock file: %w", err)
+	}
+	return f, nil
+}
+
+func (s *Storage) releaseFileLock(f *os.File) {
+	if f != nil {
+		unlockFile(f)
+		f.Close()
+	}
 }
 
 // newHealthStore creates an initialized HealthStore.

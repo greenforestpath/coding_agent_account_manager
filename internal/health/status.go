@@ -124,22 +124,26 @@ func CalculateHealth(h *ProfileHealth, config HealthConfig) (HealthStatus, float
 	} else if score <= 0.5 {
 		status = StatusWarning
 	}
-	
+
 	// Override if token is strictly expired or critical errors met
 	if !h.TokenExpiresAt.IsZero() {
 		if h.TokenExpiresAt.Before(now) {
 			status = StatusCritical
 		} else {
 			ttl := h.TokenExpiresAt.Sub(now)
-			// If within warning window (e.g. < 1h), ensure at least Warning
-			if ttl < time.Duration(config.TokenExpiryWarningMinutes)*time.Minute {
+			criticalTTL := time.Duration(config.TokenExpiryCriticalMinutes) * time.Minute
+			warningTTL := time.Duration(config.TokenExpiryWarningMinutes) * time.Minute
+			if criticalTTL > 0 && ttl <= criticalTTL {
+				status = StatusCritical
+			} else if warningTTL > 0 && ttl <= warningTTL {
+				// If within warning window (e.g. < 1h), ensure at least Warning
 				if status == StatusHealthy {
 					status = StatusWarning
 				}
 			}
 		}
 	}
-	
+
 	if h.ErrorCount1h >= config.ErrorCountCritical {
 		status = StatusCritical
 	}

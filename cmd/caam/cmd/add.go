@@ -17,6 +17,9 @@ import (
 	codexprovider "github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider/codex"
 )
 
+// execCommand allows mocking exec.CommandContext in tests
+var execCommand = exec.CommandContext
+
 var addCmd = &cobra.Command{
 	Use:   "add <tool> [profile-name]",
 	Short: "Add a new account with one command",
@@ -224,7 +227,7 @@ func runToolLogin(ctx context.Context, tool string, deviceCode bool) error {
 	switch tool {
 	case "claude":
 		// Claude uses interactive login
-		cmd = exec.CommandContext(ctx, "claude")
+		cmd = execCommand(ctx, "claude")
 	case "codex":
 		if err := codexprovider.EnsureFileCredentialStore(codexprovider.ResolveHome()); err != nil {
 			return fmt.Errorf("configure codex credential store: %w", err)
@@ -233,10 +236,10 @@ func runToolLogin(ctx context.Context, tool string, deviceCode bool) error {
 		if deviceCode {
 			cmdArgs = append(cmdArgs, "--device-auth")
 		}
-		cmd = exec.CommandContext(ctx, "codex", cmdArgs...)
+		cmd = execCommand(ctx, "codex", cmdArgs...)
 	case "gemini":
 		// Gemini uses interactive login
-		cmd = exec.CommandContext(ctx, "gemini")
+		cmd = execCommand(ctx, "gemini")
 	default:
 		return fmt.Errorf("unsupported tool: %s", tool)
 	}

@@ -505,3 +505,31 @@ func TestSessionTracker_TimestampAutoSet(t *testing.T) {
 		t.Error("timestamp was not auto-set correctly")
 	}
 }
+
+// TestSessionTracker_CallbackNoDeadlock verifies that the onUsage callback
+// can safely call SessionTracker methods without deadlocking.
+// This is a regression test for a bug where the callback was called
+// while holding the mutex lock.
+func TestSessionTracker_CallbackNoDeadlock(t *testing.T) {
+	var callbackTokens int64
+	var callbackCount int
+	var tracker *SessionTracker
+
+	tracker = NewSessionTracker(WithOnUsage(func(entry TokenEntry) {
+		// This would deadlock if callback is called while holding the lock
+		callbackTokens = tracker.TotalTokens()
+		callbackCount = tracker.EntryCount()
+	}))
+
+	// Record some entries - if there's a deadlock, this will hang
+	tracker.Record(TokenEntry{InputTokens: 100, OutputTokens: 200})
+	tracker.Record(TokenEntry{InputTokens: 150, OutputTokens: 250})
+
+	// Verify callback was invoked and could access tracker methods
+	if callbackTokens != 700 { // 100+200+150+250
+		t.Errorf("callbackTokens = %d, expected 700", callbackTokens)
+	}
+	if callbackCount != 2 {
+		t.Errorf("callbackCount = %d, expected 2", callbackCount)
+	}
+}

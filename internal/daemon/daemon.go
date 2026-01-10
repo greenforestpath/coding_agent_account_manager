@@ -285,6 +285,10 @@ func (d *Daemon) checkAndRefresh() {
 	providers := []string{"claude", "codex", "gemini"}
 	var totalChecked int64
 
+	// Use a semaphore to limit concurrency
+	sem := make(chan struct{}, 5)
+	var wg sync.WaitGroup
+
 	for _, provider := range providers {
 		profiles, err := d.vault.List(provider)
 		if err != nil {
@@ -296,9 +300,17 @@ func (d *Daemon) checkAndRefresh() {
 
 		for _, profile := range profiles {
 			totalChecked++
-			d.checkProfile(provider, profile)
+			wg.Add(1)
+			sem <- struct{}{} // Acquire token
+			go func(pProvider, pProfile string) {
+				defer wg.Done()
+				defer func() { <-sem }() // Release token
+				d.checkProfile(pProvider, pProfile)
+			}(provider, profile)
 		}
 	}
+
+	wg.Wait()
 
 	d.mu.Lock()
 	d.stats.ProfilesChecked += totalChecked

@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
@@ -65,6 +66,7 @@ type UsageInfo struct {
 
 // Selector performs profile selection based on configured algorithm.
 type Selector struct {
+	mu          sync.RWMutex
 	algorithm   Algorithm
 	healthStore *health.Storage
 	db          *caamdb.DB
@@ -86,22 +88,31 @@ func NewSelector(algorithm Algorithm, healthStore *health.Storage, db *caamdb.DB
 
 // SetRNG sets a custom random number generator (useful for testing).
 func (s *Selector) SetRNG(rng *rand.Rand) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.rng = rng
 }
 
 // SetAvoidRecent sets how long to avoid recently-used profiles.
 func (s *Selector) SetAvoidRecent(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.avoidRecent = d
 }
 
 // SetUsageData sets real-time usage data for consideration in smart selection.
 func (s *Selector) SetUsageData(usage map[string]*UsageInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.usageData = usage
 }
 
 // Select chooses a profile from the given list using the configured algorithm.
 // Returns an error if no profiles are available or all are in cooldown.
 func (s *Selector) Select(tool string, profiles []string, currentProfile string) (*Result, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("no profiles available for %s", tool)
 	}

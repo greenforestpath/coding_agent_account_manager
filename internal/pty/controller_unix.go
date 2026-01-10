@@ -115,6 +115,8 @@ func (c *unixController) InjectRaw(data []byte) error {
 }
 
 // ReadOutput reads all available output from the PTY without blocking.
+// Note: This spawns a goroutine that may outlive the timeout if the PTY
+// is blocked. The goroutine will terminate when Close() is called.
 func (c *unixController) ReadOutput() (string, error) {
 	c.mu.Lock()
 	if !c.started {
@@ -160,6 +162,8 @@ func (c *unixController) ReadOutput() (string, error) {
 }
 
 // ReadLine reads a single line from the PTY output.
+// Note: This spawns a goroutine that may outlive context cancellation.
+// The goroutine will terminate when Close() is called.
 func (c *unixController) ReadLine(ctx context.Context) (string, error) {
 	c.mu.Lock()
 	if !c.started {
@@ -194,6 +198,8 @@ func (c *unixController) ReadLine(ctx context.Context) (string, error) {
 }
 
 // WaitForPattern reads output until the pattern matches or timeout.
+// Note: This spawns a reader goroutine that may outlive the timeout.
+// The goroutine will terminate when Close() is called.
 func (c *unixController) WaitForPattern(ctx context.Context, pattern *regexp.Regexp, timeout time.Duration) (string, error) {
 	if pattern == nil {
 		return "", fmt.Errorf("pattern cannot be nil")

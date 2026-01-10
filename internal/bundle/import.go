@@ -2,6 +2,7 @@ package bundle
 
 import (
 	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -267,20 +268,11 @@ func (i *VaultImporter) extractEncryptedBundle(destDir, password string) error {
 		return fmt.Errorf("decrypt: %w", err)
 	}
 
-	// Write decrypted zip to temp file
-	tempZip := filepath.Join(destDir, "bundle.zip")
-	if err := os.WriteFile(tempZip, plainData, 0600); err != nil {
-		return fmt.Errorf("write decrypted zip: %w", err)
-	}
-	// Ensure temp zip is always cleaned up, even on error
-	defer os.Remove(tempZip)
-
-	// Extract the decrypted zip
-	r, err := zip.OpenReader(tempZip)
+	// Create zip reader from memory
+	r, err := zip.NewReader(bytes.NewReader(plainData), int64(len(plainData)))
 	if err != nil {
 		return fmt.Errorf("open decrypted zip: %w", err)
 	}
-	defer r.Close()
 
 	for _, f := range r.File {
 		if err := extractZipFile(f, destDir); err != nil {

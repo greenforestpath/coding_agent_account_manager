@@ -1,6 +1,11 @@
 package usage
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -251,6 +256,46 @@ func TestUsageInfo_TimeUntilReset(t *testing.T) {
 					t.Errorf("TimeUntilReset() = %v, expected in range [%v, %v]",
 						result, tc.expectRange[0], tc.expectRange[1])
 				}
+			}
+		})
+	}
+}
+
+func TestCodexFetcher_Fetch_BalanceParsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		balance  string
+		expected float64
+	}{
+		{name: "numeric balance", balance: "12.34", expected: 12.34},
+		{name: "string balance", balance: `"45.67"`, expected: 45.67},
+		{name: "comma balance", balance: `"1,234.50"`, expected: 1234.50},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := fmt.Sprintf(`{"plan_type":"pro","rate_limit":{},"credits":{"has_credits":true,"unlimited":false,"balance":%s}}`, tc.balance)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != CodexUsagePath {
+					t.Fatalf("unexpected path: %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, payload)
+			}))
+			defer server.Close()
+
+			fetcher := NewCodexFetcher()
+			fetcher.baseURL = server.URL
+
+			info, err := fetcher.Fetch(context.Background(), "token")
+			if err != nil {
+				t.Fatalf("Fetch() error = %v", err)
+			}
+			if info.Credits == nil || info.Credits.Balance == nil {
+				t.Fatalf("expected credits balance, got nil")
+			}
+			if got := *info.Credits.Balance; got != tc.expected {
+				t.Fatalf("balance = %v, expected %v", got, tc.expected)
 			}
 		})
 	}

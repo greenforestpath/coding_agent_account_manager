@@ -50,7 +50,7 @@ func TestCalculateHealth(t *testing.T) {
 				TokenExpiresAt: now.Add(5 * time.Minute),
 				ErrorCount1h:   0,
 			},
-			expectedStatus: StatusWarning, // Score < 0.5 but > 0
+			expectedStatus: StatusCritical,
 		},
 		{
 			name: "High error count",

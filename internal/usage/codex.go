@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,9 +52,49 @@ type codexWindow struct {
 }
 
 type codexCreditInfo struct {
-	HasCredits bool    `json:"has_credits"`
-	Unlimited  bool    `json:"unlimited"`
-	Balance    *string `json:"balance,omitempty"` // Sometimes string, sometimes number
+	HasCredits bool         `json:"has_credits"`
+	Unlimited  bool         `json:"unlimited"`
+	Balance    codexBalance `json:"balance,omitempty"` // Sometimes string, sometimes number
+}
+
+type codexBalance struct {
+	Value *float64
+}
+
+func (b *codexBalance) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		b.Value = nil
+		return nil
+	}
+
+	// Quoted string path.
+	if len(raw) >= 2 && (raw[0] == '"' || raw[0] == '\'') {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return fmt.Errorf("parse balance string: %w", err)
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			b.Value = nil
+			return nil
+		}
+		s = strings.ReplaceAll(s, ",", "")
+		val, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return fmt.Errorf("parse balance string %q: %w", s, err)
+		}
+		b.Value = &val
+		return nil
+	}
+
+	// Number path.
+	var val float64
+	if err := json.Unmarshal(data, &val); err != nil {
+		return fmt.Errorf("parse balance number: %w", err)
+	}
+	b.Value = &val
+	return nil
 }
 
 // CodexFetchOptions provides optional parameters for fetching.
@@ -149,11 +190,8 @@ func (f *CodexFetcher) FetchWithOptions(ctx context.Context, accessToken string,
 			HasCredits: usage.Credits.HasCredits,
 			Unlimited:  usage.Credits.Unlimited,
 		}
-		if usage.Credits.Balance != nil {
-			var balance float64
-			if _, err := fmt.Sscanf(*usage.Credits.Balance, "%f", &balance); err == nil {
-				info.Credits.Balance = &balance
-			}
+		if usage.Credits.Balance.Value != nil {
+			info.Credits.Balance = usage.Credits.Balance.Value
 		}
 	}
 

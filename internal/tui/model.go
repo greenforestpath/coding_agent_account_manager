@@ -374,6 +374,13 @@ type refreshResultMsg struct {
 	err      error
 }
 
+// activateResultMsg is sent when a profile activation completes.
+type activateResultMsg struct {
+	provider string
+	profile  string
+	err      error
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -558,6 +565,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update profiles panel with current provider's profiles
 		m.syncProfilesPanel()
 		return m, nil
+
+	case activateResultMsg:
+		if msg.err != nil {
+			m.showError(msg.err, "Activate")
+			return m, nil
+		}
+		m.showActivateSuccess(msg.provider, msg.profile)
+		// Refresh profiles to update active state
+		ctx := refreshContext{
+			provider:        msg.provider,
+			selectedProfile: msg.profile,
+		}
+		return m, m.refreshProfiles(ctx)
 
 	case refreshResultMsg:
 		if msg.err != nil {
@@ -1173,6 +1193,35 @@ func (m Model) doRefreshProfile(provider, profile string) tea.Cmd {
 	}
 }
 
+// doActivateProfile returns a tea.Cmd that performs the profile activation.
+func (m Model) doActivateProfile(provider, profile string) tea.Cmd {
+	return func() tea.Msg {
+		fileSet, ok := authFileSetForProvider(provider)
+		if !ok {
+			return activateResultMsg{
+				provider: provider,
+				profile:  profile,
+				err:      fmt.Errorf("unknown provider: %s", provider),
+			}
+		}
+
+		vault := authfile.NewVault(m.vaultPath)
+		if err := vault.Restore(fileSet, profile); err != nil {
+			return activateResultMsg{
+				provider: provider,
+				profile:  profile,
+				err:      err,
+			}
+		}
+
+		return activateResultMsg{
+			provider: provider,
+			profile:  profile,
+			err:      nil,
+		}
+	}
+}
+
 // handleOpenInBrowser opens the account page in browser.
 func (m Model) handleOpenInBrowser() (tea.Model, tea.Cmd) {
 	provider := m.currentProvider()
@@ -1262,34 +1311,11 @@ func (m Model) executeConfirmedAction() (tea.Model, tea.Cmd) {
 			profile := profiles[m.selected]
 			provider := m.currentProvider()
 
-			// Get the auth file set for this provider
-			fileSet, ok := authFileSetForProvider(provider)
-			if !ok {
-				m.showError(fmt.Errorf("unknown provider: %s", provider), "Activate")
-				m.state = stateList
-				m.pendingAction = confirmNone
-				return m, nil
-			}
-
-			// Perform the activation via vault restore
-			vault := authfile.NewVault(m.vaultPath)
-			if err := vault.Restore(fileSet, profile.Name); err != nil {
-				m.showError(err, "Activate")
-				m.state = stateList
-				m.pendingAction = confirmNone
-				return m, nil
-			}
-
-			m.showActivateSuccess(provider, profile.Name)
+			m.statusMsg = fmt.Sprintf("Activating %s...", profile.Name)
 			m.state = stateList
 			m.pendingAction = confirmNone
 
-			// Refresh profiles to update active state
-			ctx := refreshContext{
-				provider:        provider,
-				selectedProfile: profile.Name,
-			}
-			return m, m.refreshProfiles(ctx)
+			return m, m.doActivateProfile(provider, profile.Name)
 		}
 
 	case confirmDelete:

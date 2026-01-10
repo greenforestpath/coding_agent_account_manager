@@ -367,13 +367,13 @@ func formatRelativeTime(t time.Time) string {
 }
 
 // padRight pads a string to the right with spaces.
-// Uses rune count for proper Unicode handling.
+// Uses lipgloss.Width for proper visual width handling (emojis, CJK).
 func padRight(s string, width int) string {
-	runeCount := utf8.RuneCountInString(s)
-	if runeCount >= width {
+	w := lipgloss.Width(s)
+	if w >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-runeCount)
+	return s + strings.Repeat(" ", width-w)
 }
 
 // truncate truncates a string to the given width in runes.

@@ -103,7 +103,6 @@ func (t *SessionTracker) Record(entry TokenEntry) {
 	}
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	t.entries = append(t.entries, entry)
 
@@ -125,9 +124,14 @@ func (t *SessionTracker) Record(entry TokenEntry) {
 		t.entries = t.entries[excess:]
 	}
 
-	// Fire callback outside lock? No, keep it simple for now
-	if t.onUsage != nil {
-		t.onUsage(entry)
+	// Capture callback before releasing lock to avoid race
+	callback := t.onUsage
+	t.mu.Unlock()
+
+	// Fire callback outside lock to prevent deadlock if callback
+	// calls SessionTracker methods that acquire the mutex.
+	if callback != nil {
+		callback(entry)
 	}
 }
 

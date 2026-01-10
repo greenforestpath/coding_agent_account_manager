@@ -32,18 +32,42 @@ func ShouldRefresh(h *health.ProfileHealth, threshold time.Duration) bool {
 
 // RefreshProfile orchestrates the refresh for a specific provider/profile.
 func RefreshProfile(ctx context.Context, provider, profile string, vault *authfile.Vault, store *health.Storage) error {
+	// Check if this profile is currently active before we modify the vault
+	// (which would change the hash and break ActiveProfile detection)
+	isActive := false
+	fileSet, ok := authfile.GetAuthFileSet(provider)
+	if ok {
+		if active, err := vault.ActiveProfile(fileSet); err == nil && active == profile {
+			isActive = true
+		}
+	}
+
 	vaultPath := vault.ProfilePath(provider, profile)
 
+	var err error
 	switch provider {
 	case "claude":
-		return refreshClaude(ctx, vaultPath)
+		err = refreshClaude(ctx, vaultPath)
 	case "codex":
-		return refreshCodex(ctx, vaultPath)
+		err = refreshCodex(ctx, vaultPath)
 	case "gemini":
-		return refreshGemini(ctx, provider, profile, store, vaultPath)
+		err = refreshGemini(ctx, provider, profile, store, vaultPath)
 	default:
 		return &UnsupportedError{Provider: provider, Reason: "provider not supported"}
 	}
+
+	if err != nil {
+		return err
+	}
+
+	// If the profile was active, restore the updated files to the active location
+	if isActive {
+		if restoreErr := vault.Restore(fileSet, profile); restoreErr != nil {
+			return fmt.Errorf("refresh successful but failed to update active files: %w", restoreErr)
+		}
+	}
+
+	return nil
 }
 
 func refreshClaude(ctx context.Context, vaultPath string) error {
