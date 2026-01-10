@@ -147,9 +147,9 @@ func TestAuthFileSetForProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {
-			_, ok := authFileSetForProvider(tt.provider)
+			_, ok := AuthFileSetForProvider(tt.provider)
 			if ok != tt.wantOK {
-				t.Errorf("authFileSetForProvider(%q) ok = %v, want %v", tt.provider, ok, tt.wantOK)
+				t.Errorf("AuthFileSetForProvider(%q) ok = %v, want %v", tt.provider, ok, tt.wantOK)
 			}
 		})
 	}

@@ -43,6 +43,10 @@ func TestActivateCommand_Extended(t *testing.T) {
 	defer func() {
 		vault = originalVault
 		tools = originalTools
+		// Reset flags that may have been modified during tests
+		activateCmd.Flags().Set("json", "false")
+		activateCmd.Flags().Set("auto", "false")
+		activateCmd.Flags().Set("force", "false")
 	}()
 	
 	vault = authfile.NewVault(vaultDir)

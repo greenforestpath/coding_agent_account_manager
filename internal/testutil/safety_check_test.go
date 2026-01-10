@@ -56,11 +56,12 @@ func TestNoRealHomeWrites(t *testing.T) {
 	// Known safe exceptions (files that have been manually audited)
 	safeExceptions := map[string]bool{
 		// These files properly save/restore HOME or only read (don't write)
-		"internal/sync/sync_test.go":              true, // Uses defer to restore HOME
-		"internal/authwatch/authwatch_test.go":    true, // Uses defer to restore HOME
+		"internal/sync/sync_test.go":               true, // Uses defer to restore HOME
+		"internal/authwatch/authwatch_test.go":     true, // Uses defer to restore HOME
 		"internal/passthrough/passthrough_test.go": true, // Only reads UserHomeDir for verification
-		"internal/testutil/safety_check_test.go":  true, // This file - contains patterns for detection
-		"internal/logs/claude_test.go":            true, // Uses t.TempDir(); UserHomeDir only for path verification
+		"internal/testutil/safety_check_test.go":   true, // This file - contains patterns for detection
+		"internal/logs/claude_test.go":             true, // Uses t.TempDir(); UserHomeDir only for path verification
+		"internal/logs/gemini_test.go":             true, // Uses t.TempDir(); UserHomeDir only for path verification
 	}
 
 	var violations []string
