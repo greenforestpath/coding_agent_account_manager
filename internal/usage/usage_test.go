@@ -435,3 +435,227 @@ func TestCreditInfo(t *testing.T) {
 		}
 	})
 }
+
+func TestPredictDepletion(t *testing.T) {
+	now := time.Now()
+	future1h := now.Add(time.Hour)
+
+	tests := []struct {
+		name           string
+		currentPercent float64
+		burnRate       *BurnRateInfo
+		window         *UsageWindow
+		expectZero     bool
+		expectRange    [2]time.Duration // min, max from now
+	}{
+		{
+			name:           "nil burn rate returns zero",
+			currentPercent: 50,
+			burnRate:       nil,
+			expectZero:     true,
+		},
+		{
+			name:           "zero burn rate returns zero",
+			currentPercent: 50,
+			burnRate:       &BurnRateInfo{PercentPerHour: 0},
+			expectZero:     true,
+		},
+		{
+			name:           "already at 100% returns now",
+			currentPercent: 100,
+			burnRate:       &BurnRateInfo{PercentPerHour: 10},
+			expectRange:    [2]time.Duration{-time.Second, time.Second}, // Allow slight timing variance
+		},
+		{
+			name:           "50% at 10%/hr = 5 hours",
+			currentPercent: 50,
+			burnRate:       &BurnRateInfo{PercentPerHour: 10},
+			expectRange:    [2]time.Duration{4*time.Hour + 55*time.Minute, 5*time.Hour + 5*time.Minute},
+		},
+		{
+			name:           "80% at 20%/hr = 1 hour",
+			currentPercent: 80,
+			burnRate:       &BurnRateInfo{PercentPerHour: 20},
+			expectRange:    [2]time.Duration{55 * time.Minute, 65 * time.Minute},
+		},
+		{
+			name:           "caps at window reset",
+			currentPercent: 10,
+			burnRate:       &BurnRateInfo{PercentPerHour: 5}, // Would take 18 hours
+			window:         &UsageWindow{ResetsAt: future1h}, // But resets in 1 hour
+			expectRange:    [2]time.Duration{55 * time.Minute, 65 * time.Minute},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := PredictDepletion(tc.currentPercent, tc.burnRate, tc.window)
+
+			if tc.expectZero {
+				if !result.IsZero() {
+					t.Errorf("expected zero time, got %v", result)
+				}
+				return
+			}
+
+			duration := time.Until(result)
+			if duration < tc.expectRange[0] || duration > tc.expectRange[1] {
+				t.Errorf("PredictDepletion() = %v from now, expected in range [%v, %v]",
+					duration, tc.expectRange[0], tc.expectRange[1])
+			}
+		})
+	}
+}
+
+func TestUsageInfo_UpdateDepletion(t *testing.T) {
+	t.Run("nil info does nothing", func(t *testing.T) {
+		var info *UsageInfo
+		info.UpdateDepletion() // Should not panic
+	})
+
+	t.Run("no burn rate does nothing", func(t *testing.T) {
+		info := &UsageInfo{
+			PrimaryWindow: &UsageWindow{Utilization: 0.5},
+		}
+		info.UpdateDepletion()
+		if !info.EstimatedDepletion.IsZero() {
+			t.Error("expected zero depletion without burn rate")
+		}
+	})
+
+	t.Run("calculates depletion correctly", func(t *testing.T) {
+		info := &UsageInfo{
+			PrimaryWindow: &UsageWindow{Utilization: 0.5}, // 50%
+			BurnRate:      &BurnRateInfo{PercentPerHour: 10, Confidence: 0.8},
+		}
+		info.UpdateDepletion()
+
+		// 50% remaining at 10%/hr = 5 hours
+		ttd := info.TimeToDepletion()
+		if ttd < 4*time.Hour+50*time.Minute || ttd > 5*time.Hour+10*time.Minute {
+			t.Errorf("TimeToDepletion() = %v, expected ~5h", ttd)
+		}
+
+		if info.DepletionConfidence != 0.8 {
+			t.Errorf("DepletionConfidence = %v, expected 0.8", info.DepletionConfidence)
+		}
+	})
+}
+
+func TestUsageInfo_TimeToDepletion(t *testing.T) {
+	t.Run("nil returns 0", func(t *testing.T) {
+		var info *UsageInfo
+		if info.TimeToDepletion() != 0 {
+			t.Error("expected 0 for nil")
+		}
+	})
+
+	t.Run("zero depletion returns 0", func(t *testing.T) {
+		info := &UsageInfo{}
+		if info.TimeToDepletion() != 0 {
+			t.Error("expected 0 for zero depletion")
+		}
+	})
+
+	t.Run("past depletion returns 0", func(t *testing.T) {
+		info := &UsageInfo{
+			EstimatedDepletion: time.Now().Add(-time.Hour),
+		}
+		if info.TimeToDepletion() != 0 {
+			t.Error("expected 0 for past depletion")
+		}
+	})
+
+	t.Run("future depletion returns positive", func(t *testing.T) {
+		info := &UsageInfo{
+			EstimatedDepletion: time.Now().Add(time.Hour),
+		}
+		ttd := info.TimeToDepletion()
+		if ttd < 55*time.Minute || ttd > 65*time.Minute {
+			t.Errorf("TimeToDepletion() = %v, expected ~1h", ttd)
+		}
+	})
+}
+
+func TestUsageInfo_IsDepletionImminent(t *testing.T) {
+	t.Run("nil returns false", func(t *testing.T) {
+		var info *UsageInfo
+		if info.IsDepletionImminent(10 * time.Minute) {
+			t.Error("expected false for nil")
+		}
+	})
+
+	t.Run("zero depletion returns false", func(t *testing.T) {
+		info := &UsageInfo{}
+		if info.IsDepletionImminent(10 * time.Minute) {
+			t.Error("expected false for zero depletion")
+		}
+	})
+
+	t.Run("imminent when within threshold", func(t *testing.T) {
+		info := &UsageInfo{
+			EstimatedDepletion: time.Now().Add(5 * time.Minute),
+		}
+		if !info.IsDepletionImminent(10 * time.Minute) {
+			t.Error("expected true for 5min depletion with 10min threshold")
+		}
+	})
+
+	t.Run("not imminent when beyond threshold", func(t *testing.T) {
+		info := &UsageInfo{
+			EstimatedDepletion: time.Now().Add(30 * time.Minute),
+		}
+		if info.IsDepletionImminent(10 * time.Minute) {
+			t.Error("expected false for 30min depletion with 10min threshold")
+		}
+	})
+}
+
+func TestUsageInfo_DepletionWarningLevel(t *testing.T) {
+	tests := []struct {
+		name     string
+		info     *UsageInfo
+		expected int
+	}{
+		{
+			name:     "nil returns 0",
+			info:     nil,
+			expected: 0,
+		},
+		{
+			name:     "zero depletion returns 0",
+			info:     &UsageInfo{},
+			expected: 0,
+		},
+		{
+			name: "imminent (<10min) returns 2",
+			info: &UsageInfo{
+				EstimatedDepletion: time.Now().Add(5 * time.Minute),
+			},
+			expected: 2,
+		},
+		{
+			name: "approaching (<30min) returns 1",
+			info: &UsageInfo{
+				EstimatedDepletion: time.Now().Add(20 * time.Minute),
+			},
+			expected: 1,
+		},
+		{
+			name: "none (>=30min) returns 0",
+			info: &UsageInfo{
+				EstimatedDepletion: time.Now().Add(time.Hour),
+			},
+			expected: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := tc.info.DepletionWarningLevel()
+			if result != tc.expected {
+				t.Errorf("DepletionWarningLevel() = %d, expected %d", result, tc.expected)
+			}
+		})
+	}
+}

@@ -62,6 +62,17 @@ type UsageInfo struct {
 
 	// Error contains any error message from fetching.
 	Error string `json:"error,omitempty"`
+
+	// BurnRate contains token consumption rate from log/session data.
+	BurnRate *BurnRateInfo `json:"burn_rate,omitempty"`
+
+	// EstimatedDepletion is when the rate limit is predicted to be hit
+	// at the current burn rate. Zero time if cannot predict.
+	EstimatedDepletion time.Time `json:"estimated_depletion,omitempty"`
+
+	// DepletionConfidence is how confident the depletion prediction is (0-1).
+	// Based on burn rate data quality and sample size.
+	DepletionConfidence float64 `json:"depletion_confidence,omitempty"`
 }
 
 // CreditInfo contains credit/balance information (primarily for Codex).
@@ -272,4 +283,106 @@ func (u *UsageInfo) WindowForModel(model string) *UsageWindow {
 
 	// Fall back to tertiary (premium model) window
 	return u.TertiaryWindow
+}
+
+// PredictDepletion calculates when the rate limit will be hit based on burn rate.
+// Returns zero time if prediction is not possible (no data or no burn rate).
+//
+// The prediction considers:
+// - Current utilization percentage
+// - Burn rate (percent consumed per hour)
+// - Window reset time (caps prediction at reset)
+func PredictDepletion(currentPercent float64, burnRate *BurnRateInfo, window *UsageWindow) time.Time {
+	if burnRate == nil || burnRate.PercentPerHour <= 0 {
+		return time.Time{} // Cannot predict without burn rate
+	}
+
+	if currentPercent >= 100 {
+		return time.Now() // Already depleted
+	}
+
+	remainingPercent := 100.0 - currentPercent
+	hoursUntilDepletion := remainingPercent / burnRate.PercentPerHour
+
+	predicted := time.Now().Add(time.Duration(hoursUntilDepletion * float64(time.Hour)))
+
+	// Cap at window reset time (usage resets before depletion)
+	if window != nil && !window.ResetsAt.IsZero() && predicted.After(window.ResetsAt) {
+		return window.ResetsAt
+	}
+
+	return predicted
+}
+
+// UpdateDepletion calculates and sets the EstimatedDepletion and DepletionConfidence.
+// Uses the most constrained window for prediction.
+func (u *UsageInfo) UpdateDepletion() {
+	if u == nil || u.BurnRate == nil {
+		return
+	}
+
+	// Find the most constrained window
+	window := u.MostConstrainedWindow()
+	if window == nil {
+		return
+	}
+
+	// Get current utilization
+	util := window.Utilization
+	if util == 0 && window.UsedPercent > 0 {
+		util = float64(window.UsedPercent) / 100.0
+	}
+	currentPercent := util * 100
+
+	// Predict depletion
+	u.EstimatedDepletion = PredictDepletion(currentPercent, u.BurnRate, window)
+
+	// Set confidence based on burn rate confidence
+	u.DepletionConfidence = u.BurnRate.Confidence
+}
+
+// TimeToDepletion returns the duration until estimated depletion.
+// Returns 0 if no depletion is predicted or already depleted.
+func (u *UsageInfo) TimeToDepletion() time.Duration {
+	if u == nil || u.EstimatedDepletion.IsZero() {
+		return 0
+	}
+
+	ttd := time.Until(u.EstimatedDepletion)
+	if ttd < 0 {
+		return 0
+	}
+	return ttd
+}
+
+// IsDepletionImminent returns true if depletion is expected within the threshold.
+// Common thresholds: 10 minutes (imminent), 30 minutes (approaching).
+func (u *UsageInfo) IsDepletionImminent(threshold time.Duration) bool {
+	if u == nil || u.EstimatedDepletion.IsZero() {
+		return false
+	}
+
+	ttd := u.TimeToDepletion()
+	return ttd > 0 && ttd <= threshold
+}
+
+// DepletionWarningLevel returns a warning level based on time to depletion.
+// Returns 0 (none), 1 (approaching - <30min), or 2 (imminent - <10min).
+func (u *UsageInfo) DepletionWarningLevel() int {
+	if u == nil {
+		return 0
+	}
+
+	ttd := u.TimeToDepletion()
+	if ttd == 0 {
+		return 0
+	}
+
+	if ttd < 10*time.Minute {
+		return 2 // Imminent
+	}
+	if ttd < 30*time.Minute {
+		return 1 // Approaching
+	}
+	return 0 // None
 }
