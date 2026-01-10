@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,7 @@ func TestNoRealHomeWrites(t *testing.T) {
 		"internal/authwatch/authwatch_test.go":    true, // Uses defer to restore HOME
 		"internal/passthrough/passthrough_test.go": true, // Only reads UserHomeDir for verification
 		"internal/testutil/safety_check_test.go":  true, // This file - contains patterns for detection
+		"internal/logs/claude_test.go":            true, // Uses t.TempDir(); UserHomeDir only for path verification
 	}
 
 	var violations []string
@@ -132,7 +134,7 @@ func checkFileForDangerousPatterns(relPath string, content []byte) []string {
 				// Look for WriteFile or MkdirAll nearby
 				if strings.Contains(line, "WriteFile") || strings.Contains(line, "MkdirAll") {
 					violations = append(violations,
-						relPath+":"+string(rune(lineNum))+": Uses os.Getenv(\"HOME\") without temp dir override")
+						relPath+":"+strconv.Itoa(lineNum)+": Uses os.Getenv(\"HOME\") without temp dir override")
 				}
 			}
 		}
