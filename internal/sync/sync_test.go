@@ -1055,3 +1055,867 @@ func TestMergeDiscoveredMachines(t *testing.T) {
 		}
 	}
 }
+
+// TestSyncPoolAddMachineNilMap tests AddMachine when Machines map is nil.
+func TestSyncPoolAddMachineNilMap(t *testing.T) {
+	pool := &SyncPool{
+		Machines: nil, // Explicitly nil
+	}
+
+	m := NewMachine("test", "192.168.1.100")
+	if err := pool.AddMachine(m); err != nil {
+		t.Fatalf("AddMachine failed: %v", err)
+	}
+
+	if pool.Machines == nil {
+		t.Error("AddMachine should initialize Machines map")
+	}
+	if pool.MachineCount() != 1 {
+		t.Errorf("Pool count = %d, want 1", pool.MachineCount())
+	}
+}
+
+// TestSyncPoolAddMachineDuplicateID tests adding a machine with duplicate ID.
+func TestSyncPoolAddMachineDuplicateID(t *testing.T) {
+	pool := NewSyncPool()
+	m1 := NewMachine("test1", "192.168.1.100")
+
+	if err := pool.AddMachine(m1); err != nil {
+		t.Fatalf("AddMachine failed: %v", err)
+	}
+
+	// Create another machine with the same ID
+	m2 := &Machine{
+		ID:      m1.ID, // Same ID
+		Name:    "different-name",
+		Address: "192.168.1.200",
+		Port:    22,
+	}
+
+	if err := pool.AddMachine(m2); err == nil {
+		t.Error("AddMachine should fail for duplicate ID")
+	}
+}
+
+// TestSyncPoolAddMachineInvalid tests adding an invalid machine.
+func TestSyncPoolAddMachineInvalid(t *testing.T) {
+	pool := NewSyncPool()
+
+	// Machine with empty name
+	m := &Machine{
+		ID:      "some-id",
+		Name:    "",
+		Address: "192.168.1.100",
+	}
+
+	if err := pool.AddMachine(m); err == nil {
+		t.Error("AddMachine should fail for invalid machine")
+	}
+}
+
+// TestSyncPoolGetMachineNotFound tests GetMachine with non-existent ID.
+func TestSyncPoolGetMachineNotFound(t *testing.T) {
+	pool := NewSyncPool()
+
+	if m := pool.GetMachine("nonexistent"); m != nil {
+		t.Error("GetMachine should return nil for non-existent ID")
+	}
+}
+
+// TestSyncPoolGetMachineByNameNotFound tests GetMachineByName with non-existent name.
+func TestSyncPoolGetMachineByNameNotFound(t *testing.T) {
+	pool := NewSyncPool()
+	pool.AddMachine(NewMachine("test", "192.168.1.100"))
+
+	if m := pool.GetMachineByName("nonexistent"); m != nil {
+		t.Error("GetMachineByName should return nil for non-existent name")
+	}
+}
+
+// TestSyncPoolGetMachineByNameCaseInsensitive tests case-insensitive name lookup.
+func TestSyncPoolGetMachineByNameCaseInsensitive(t *testing.T) {
+	pool := NewSyncPool()
+	m := NewMachine("MyServer", "192.168.1.100")
+	pool.AddMachine(m)
+
+	tests := []string{"myserver", "MYSERVER", "MyServer", "mYsErVeR"}
+	for _, name := range tests {
+		if got := pool.GetMachineByName(name); got != m {
+			t.Errorf("GetMachineByName(%q) failed to find machine", name)
+		}
+	}
+}
+
+// TestSyncPoolSaveWithBasePath tests Save with custom base path.
+func TestSyncPoolSaveWithBasePath(t *testing.T) {
+	tmpDir := t.TempDir()
+	pool := NewSyncPool()
+	pool.SetBasePath(tmpDir)
+	pool.Enable()
+
+	m := NewMachine("test", "192.168.1.100")
+	pool.AddMachine(m)
+
+	if err := pool.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Verify file was created
+	poolFile := filepath.Join(tmpDir, "pool.json")
+	if _, err := os.Stat(poolFile); os.IsNotExist(err) {
+		t.Error("Save should create pool.json file")
+	}
+}
+
+// TestSyncPoolLoadWithBasePath tests Load with custom base path.
+func TestSyncPoolLoadWithBasePath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First save a pool
+	pool := NewSyncPool()
+	pool.SetBasePath(tmpDir)
+	pool.Enable()
+	pool.AddMachine(NewMachine("test", "192.168.1.100"))
+	pool.Save()
+
+	// Now load it
+	loaded := NewSyncPool()
+	loaded.SetBasePath(tmpDir)
+	if err := loaded.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if !loaded.Enabled {
+		t.Error("Loaded pool should be enabled")
+	}
+	if loaded.MachineCount() != 1 {
+		t.Errorf("Loaded pool count = %d, want 1", loaded.MachineCount())
+	}
+}
+
+// TestSyncPoolLoadInvalidJSON tests Load with invalid JSON file.
+func TestSyncPoolLoadInvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write invalid JSON
+	poolFile := filepath.Join(tmpDir, "pool.json")
+	os.WriteFile(poolFile, []byte("{invalid json"), 0600)
+
+	pool := NewSyncPool()
+	pool.SetBasePath(tmpDir)
+
+	if err := pool.Load(); err == nil {
+		t.Error("Load should fail with invalid JSON")
+	}
+}
+
+// TestSyncPoolLoadSyncPoolError tests LoadSyncPool with error.
+func TestSyncPoolLoadSyncPoolError(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("XDG_DATA_HOME", oldXDG)
+
+	// Write invalid JSON to pool file
+	syncDir := filepath.Join(tmpDir, "caam", "sync")
+	os.MkdirAll(syncDir, 0700)
+	os.WriteFile(filepath.Join(syncDir, "pool.json"), []byte("{invalid"), 0600)
+
+	_, err := LoadSyncPool()
+	if err == nil {
+		t.Error("LoadSyncPool should fail with invalid JSON")
+	}
+}
+
+// TestSyncStateLoadInvalidIdentity tests Load with invalid identity file.
+func TestSyncStateLoadInvalidIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("XDG_DATA_HOME", oldXDG)
+
+	// Create invalid identity file
+	syncDir := filepath.Join(tmpDir, "caam", "sync")
+	os.MkdirAll(syncDir, 0700)
+	os.WriteFile(filepath.Join(syncDir, "identity.json"), []byte("{invalid json"), 0600)
+
+	state := NewSyncState(syncDir)
+	if err := state.Load(); err == nil {
+		t.Error("Load should fail with invalid identity file")
+	}
+}
+
+// TestSyncStateSaveNilPool tests Save with nil pool.
+func TestSyncStateSaveNilPool(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	state.Pool = nil
+
+	// Should not panic
+	if err := state.Save(); err != nil {
+		t.Fatalf("Save with nil pool failed: %v", err)
+	}
+}
+
+// TestSyncStateSaveQueueTrimming tests that Save trims queue to max size.
+func TestSyncStateSaveQueueTrimming(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+
+	// Set a small max size for testing
+	state.Queue.MaxSize = 5
+
+	// Add more entries than max
+	for i := 0; i < 10; i++ {
+		state.Queue.Entries = append(state.Queue.Entries, QueueEntry{
+			Provider: "claude",
+			Profile:  "test",
+			Machine:  "m" + string(rune('0'+i)),
+			AddedAt:  time.Now(),
+		})
+	}
+
+	if err := state.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Queue should be trimmed
+	if len(state.Queue.Entries) != 5 {
+		t.Errorf("Queue len after save = %d, want 5", len(state.Queue.Entries))
+	}
+}
+
+// TestSyncStateSaveHistoryTrimming tests that Save trims history to max size.
+func TestSyncStateSaveHistoryTrimming(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+
+	// Set a small max size for testing
+	state.History.MaxSize = 5
+
+	// Add more entries than max
+	for i := 0; i < 10; i++ {
+		state.History.Entries = append(state.History.Entries, HistoryEntry{
+			Timestamp: time.Now(),
+			Provider:  "claude",
+			Profile:   "test",
+		})
+	}
+
+	if err := state.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// History should be trimmed
+	if len(state.History.Entries) != 5 {
+		t.Errorf("History len after save = %d, want 5", len(state.History.Entries))
+	}
+}
+
+// TestSyncStateAddToQueueNilQueue tests AddToQueue with nil queue.
+func TestSyncStateAddToQueueNilQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	state.Queue = nil
+
+	state.AddToQueue("claude", "test", "m1", "error")
+
+	if state.Queue == nil {
+		t.Error("AddToQueue should create queue when nil")
+	}
+	if len(state.Queue.Entries) != 1 {
+		t.Errorf("Queue len = %d, want 1", len(state.Queue.Entries))
+	}
+}
+
+// TestSyncStateRemoveFromQueueNilQueue tests RemoveFromQueue with nil queue.
+func TestSyncStateRemoveFromQueueNilQueue(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	state.Queue = nil
+
+	// Should not panic
+	state.RemoveFromQueue("claude", "test", "m1")
+}
+
+// TestSyncStateRemoveFromQueueNotFound tests RemoveFromQueue with non-existent entry.
+func TestSyncStateRemoveFromQueueNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	state.AddToQueue("claude", "test", "m1", "error")
+
+	initialLen := len(state.Queue.Entries)
+
+	// Remove non-existent entry
+	state.RemoveFromQueue("codex", "other", "m2")
+
+	if len(state.Queue.Entries) != initialLen {
+		t.Errorf("Queue len changed after removing non-existent entry")
+	}
+}
+
+// TestSyncStateAddToHistoryNilHistory tests AddToHistory with nil history.
+func TestSyncStateAddToHistoryNilHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	state.History = nil
+
+	state.AddToHistory(HistoryEntry{
+		Timestamp: time.Now(),
+		Provider:  "claude",
+	})
+
+	if state.History == nil {
+		t.Error("AddToHistory should create history when nil")
+	}
+	if len(state.History.Entries) != 1 {
+		t.Errorf("History len = %d, want 1", len(state.History.Entries))
+	}
+}
+
+// TestSyncStateRecentHistoryNilHistory tests RecentHistory with nil history.
+func TestSyncStateRecentHistoryNilHistory(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	state.History = nil
+
+	recent := state.RecentHistory(10)
+	if recent != nil {
+		t.Errorf("RecentHistory should return nil when history is nil")
+	}
+}
+
+// TestSyncStateRecentHistoryEmpty tests RecentHistory with empty history.
+func TestSyncStateRecentHistoryEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := NewSyncState(tmpDir)
+	// History exists but is empty
+
+	recent := state.RecentHistory(10)
+	if recent != nil {
+		t.Errorf("RecentHistory should return nil when history is empty")
+	}
+}
+
+// TestSyncStateLoadQueueMaxSizeDefault tests loadQueue sets default max size.
+func TestSyncStateLoadQueueMaxSizeDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write queue file with MaxSize = 0
+	queueData := `{"entries": [], "max_size": 0}`
+	os.WriteFile(filepath.Join(tmpDir, "queue.json"), []byte(queueData), 0600)
+
+	state := NewSyncState(tmpDir)
+	state.loadQueue()
+
+	if state.Queue.MaxSize != DefaultQueueMaxSize {
+		t.Errorf("Queue.MaxSize = %d, want %d", state.Queue.MaxSize, DefaultQueueMaxSize)
+	}
+}
+
+// TestSyncStateLoadHistoryMaxSizeDefault tests loadHistory sets default max size.
+func TestSyncStateLoadHistoryMaxSizeDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write history file with MaxSize = 0
+	historyData := `{"entries": [], "max_size": 0}`
+	os.WriteFile(filepath.Join(tmpDir, "history.json"), []byte(historyData), 0600)
+
+	state := NewSyncState(tmpDir)
+	state.loadHistory()
+
+	if state.History.MaxSize != DefaultHistoryMaxSize {
+		t.Errorf("History.MaxSize = %d, want %d", state.History.MaxSize, DefaultHistoryMaxSize)
+	}
+}
+
+// TestConnectionPoolRelease tests releasing a connection.
+func TestConnectionPoolRelease(t *testing.T) {
+	pool := NewConnectionPool(ConnectOptions{})
+
+	// Add a mock client directly for testing
+	m := NewMachine("test", "192.168.1.100")
+	pool.mu.Lock()
+	pool.clients[m.ID] = &SSHClient{machine: m} // No actual connection
+	pool.mu.Unlock()
+
+	if pool.Size() != 1 {
+		t.Fatalf("Pool size = %d, want 1", pool.Size())
+	}
+
+	// Release should remove it
+	pool.Release(m.ID)
+
+	if pool.Size() != 0 {
+		t.Errorf("Pool size after release = %d, want 0", pool.Size())
+	}
+}
+
+// TestConnectionPoolReleaseNonExistent tests releasing non-existent connection.
+func TestConnectionPoolReleaseNonExistent(t *testing.T) {
+	pool := NewConnectionPool(ConnectOptions{})
+
+	// Should not panic
+	pool.Release("nonexistent")
+
+	if pool.Size() != 0 {
+		t.Errorf("Pool size = %d, want 0", pool.Size())
+	}
+}
+
+// TestConnectionPoolCloseAll tests closing all connections.
+func TestConnectionPoolCloseAll(t *testing.T) {
+	pool := NewConnectionPool(ConnectOptions{})
+
+	// Add mock clients directly
+	for i := 0; i < 3; i++ {
+		m := NewMachine("test"+string(rune('0'+i)), "192.168.1."+string(rune('0'+i)))
+		pool.mu.Lock()
+		pool.clients[m.ID] = &SSHClient{machine: m}
+		pool.mu.Unlock()
+	}
+
+	if pool.Size() != 3 {
+		t.Fatalf("Pool size = %d, want 3", pool.Size())
+	}
+
+	pool.CloseAll()
+
+	if pool.Size() != 0 {
+		t.Errorf("Pool size after CloseAll = %d, want 0", pool.Size())
+	}
+}
+
+// TestConnectionPoolIsConnected tests checking connection status.
+func TestConnectionPoolIsConnected(t *testing.T) {
+	pool := NewConnectionPool(ConnectOptions{})
+
+	// Non-existent should return false
+	if pool.IsConnected("nonexistent") {
+		t.Error("IsConnected should return false for non-existent")
+	}
+
+	// Add mock client (not actually connected)
+	m := NewMachine("test", "192.168.1.100")
+	pool.mu.Lock()
+	pool.clients[m.ID] = &SSHClient{machine: m} // No actual connection
+	pool.mu.Unlock()
+
+	// Client exists but not connected (no actual SSH connection)
+	if pool.IsConnected(m.ID) {
+		t.Error("IsConnected should return false for unconnected client")
+	}
+}
+
+// TestConnectionPoolSize tests Size method.
+func TestConnectionPoolSize(t *testing.T) {
+	pool := NewConnectionPool(ConnectOptions{})
+
+	if pool.Size() != 0 {
+		t.Errorf("Initial size = %d, want 0", pool.Size())
+	}
+
+	// Add some entries
+	for i := 0; i < 5; i++ {
+		m := NewMachine("test"+string(rune('0'+i)), "192.168.1.100")
+		pool.mu.Lock()
+		pool.clients[m.ID] = &SSHClient{machine: m}
+		pool.mu.Unlock()
+	}
+
+	if pool.Size() != 5 {
+		t.Errorf("Size = %d, want 5", pool.Size())
+	}
+}
+
+// TestConnectionPoolConnectedMachines tests ConnectedMachines method.
+func TestConnectionPoolConnectedMachines(t *testing.T) {
+	pool := NewConnectionPool(ConnectOptions{})
+
+	// Empty pool
+	ids := pool.ConnectedMachines()
+	if len(ids) != 0 {
+		t.Errorf("ConnectedMachines len = %d, want 0", len(ids))
+	}
+
+	// Add mock clients (not actually connected)
+	for i := 0; i < 3; i++ {
+		m := NewMachine("test"+string(rune('0'+i)), "192.168.1."+string(rune('0'+i)))
+		pool.mu.Lock()
+		pool.clients[m.ID] = &SSHClient{machine: m}
+		pool.mu.Unlock()
+	}
+
+	// None should be "connected" since they have no actual SSH connection
+	ids = pool.ConnectedMachines()
+	if len(ids) != 0 {
+		t.Errorf("ConnectedMachines len = %d, want 0 (no real connections)", len(ids))
+	}
+}
+
+// TestCSVPathFallback tests CSVPath when home dir is not available.
+func TestCSVPathFallback(t *testing.T) {
+	// CSVPath should always return a valid path
+	path := CSVPath()
+	if path == "" {
+		t.Error("CSVPath should not return empty string")
+	}
+	if !strings.HasSuffix(path, CSVFileName) {
+		t.Errorf("CSVPath() = %q, want to end with %q", path, CSVFileName)
+	}
+}
+
+// TestLoadFromCSVNoFile tests LoadFromCSV when file doesn't exist.
+func TestLoadFromCSVNoFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// File doesn't exist
+	machines, err := LoadFromCSV()
+	if err != nil {
+		t.Fatalf("LoadFromCSV() error = %v", err)
+	}
+	if machines != nil {
+		t.Errorf("LoadFromCSV() should return nil when file doesn't exist")
+	}
+}
+
+// TestLoadFromCSVEmptyFile tests LoadFromCSV with empty file.
+func TestLoadFromCSVEmptyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// Create empty CSV
+	csvDir := filepath.Join(tmpDir, ".caam")
+	os.MkdirAll(csvDir, 0700)
+	os.WriteFile(filepath.Join(csvDir, CSVFileName), []byte(""), 0600)
+
+	machines, err := LoadFromCSV()
+	if err != nil {
+		t.Fatalf("LoadFromCSV() error = %v", err)
+	}
+	if len(machines) != 0 {
+		t.Errorf("LoadFromCSV() len = %d, want 0", len(machines))
+	}
+}
+
+// TestLoadFromCSVInvalidLines tests LoadFromCSV with malformed lines.
+func TestLoadFromCSVInvalidLines(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	csvContent := `# Comment
+machine_name,address,ssh_key_path
+only-one-field
+,missing-name,path
+valid-machine,192.168.1.100,~/.ssh/id_rsa
+`
+	csvDir := filepath.Join(tmpDir, ".caam")
+	os.MkdirAll(csvDir, 0700)
+	os.WriteFile(filepath.Join(csvDir, CSVFileName), []byte(csvContent), 0600)
+
+	machines, err := LoadFromCSV()
+	if err != nil {
+		t.Fatalf("LoadFromCSV() error = %v", err)
+	}
+
+	// Should only have the valid machine
+	if len(machines) != 1 {
+		t.Errorf("LoadFromCSV() len = %d, want 1", len(machines))
+	}
+	if len(machines) > 0 && machines[0].Name != "valid-machine" {
+		t.Errorf("Machine name = %q, want %q", machines[0].Name, "valid-machine")
+	}
+}
+
+// TestMachineValidationEmptyAddress tests validation with empty address.
+func TestMachineValidationEmptyAddress(t *testing.T) {
+	m := &Machine{
+		ID:      "test-id",
+		Name:    "test",
+		Address: "",
+		Port:    22,
+	}
+
+	if err := m.Validate(); err == nil {
+		t.Error("Validate should fail for empty address")
+	}
+}
+
+// TestMachineValidationEmptyName tests validation with empty name.
+func TestMachineValidationEmptyName(t *testing.T) {
+	m := &Machine{
+		ID:      "test-id",
+		Name:    "",
+		Address: "192.168.1.100",
+		Port:    22,
+	}
+
+	err := m.Validate()
+	if err == nil {
+		t.Error("Validate should fail for empty name")
+	}
+
+	// Check it's the right error
+	if ve, ok := err.(*ValidationError); ok {
+		if ve.Field != "name" {
+			t.Errorf("Error field = %q, want 'name'", ve.Field)
+		}
+	}
+}
+
+// TestMachineHostPortNonStandard tests HostPort with non-standard port.
+func TestMachineHostPortNonStandard(t *testing.T) {
+	m := NewMachine("test", "192.168.1.100")
+	m.Port = 2222
+
+	expected := "192.168.1.100:2222"
+	if got := m.HostPort(); got != expected {
+		t.Errorf("HostPort() = %q, want %q", got, expected)
+	}
+}
+
+// TestMachinesEqualDifferentUsers tests MachinesEqual with different users.
+func TestMachinesEqualDifferentUsers(t *testing.T) {
+	m1 := NewMachine("m1", "192.168.1.100")
+	m1.SSHUser = "user1"
+
+	m2 := NewMachine("m2", "192.168.1.100")
+	m2.SSHUser = "user2"
+
+	// Same address and port, different users - should still be equal
+	// (MachinesEqual only compares address and port)
+	if !MachinesEqual(m1, m2) {
+		t.Error("MachinesEqual should only compare address and port")
+	}
+}
+
+// TestNormalizeAddressIPv6 tests NormalizeAddress with IPv6.
+func TestNormalizeAddressIPv6(t *testing.T) {
+	// IPv6 addresses should be handled correctly
+	got := NormalizeAddress("::1", 22, "")
+	if got != "::1" { // Default port omitted
+		t.Errorf("NormalizeAddress(::1, 22, '') = %q", got)
+	}
+
+	got = NormalizeAddress("::1", 2222, "admin")
+	if got != "admin@::1:2222" {
+		t.Errorf("NormalizeAddress(::1, 2222, admin) = %q, want admin@::1:2222", got)
+	}
+}
+
+// TestParseAddressInvalidPort tests ParseAddress with invalid port.
+func TestParseAddressInvalidPort(t *testing.T) {
+	host, port, user := ParseAddress("example.com:abc")
+	if port != 0 {
+		t.Errorf("ParseAddress with invalid port: port = %d, want 0", port)
+	}
+	if host != "example.com" {
+		t.Errorf("ParseAddress: host = %q, want 'example.com'", host)
+	}
+	if user != "" {
+		t.Errorf("ParseAddress: user = %q, want ''", user)
+	}
+}
+
+// TestThrottler tests the SyncThrottler functionality.
+func TestThrottler(t *testing.T) {
+	throttler := NewThrottler(50 * time.Millisecond)
+
+	// First call should allow sync
+	if !throttler.ShouldSync("claude", "test") {
+		t.Error("First call should allow sync")
+	}
+
+	// Record sync
+	throttler.RecordSync("claude", "test")
+
+	// Immediate second call should not allow sync
+	if throttler.ShouldSync("claude", "test") {
+		t.Error("Immediate second call should not allow sync")
+	}
+
+	// Different profile should allow sync
+	if !throttler.ShouldSync("codex", "test") {
+		t.Error("Different provider should allow sync")
+	}
+
+	// Wait and try again
+	time.Sleep(60 * time.Millisecond)
+	if !throttler.ShouldSync("claude", "test") {
+		t.Error("After waiting, should allow sync again")
+	}
+}
+
+// TestThrottlerLastSyncTime tests LastSyncTime method.
+func TestThrottlerLastSyncTime(t *testing.T) {
+	throttler := NewThrottler(time.Minute)
+
+	// No previous sync
+	lastSync := throttler.LastSyncTime("claude", "test")
+	if !lastSync.IsZero() {
+		t.Error("LastSyncTime should return zero for never-synced profile")
+	}
+
+	// Record a sync
+	before := time.Now()
+	throttler.RecordSync("claude", "test")
+	after := time.Now()
+
+	lastSync = throttler.LastSyncTime("claude", "test")
+	if lastSync.Before(before) || lastSync.After(after) {
+		t.Errorf("LastSyncTime = %v, should be between %v and %v", lastSync, before, after)
+	}
+}
+
+// TestThrottlerReset tests Reset method.
+func TestThrottlerReset(t *testing.T) {
+	throttler := NewThrottler(time.Hour)
+
+	// Record some syncs
+	throttler.RecordSync("claude", "test1")
+	throttler.RecordSync("codex", "test2")
+
+	if throttler.ShouldSync("claude", "test1") {
+		t.Error("Should not allow sync immediately after recording")
+	}
+
+	// Reset
+	throttler.Reset()
+
+	// Should allow syncs again
+	if !throttler.ShouldSync("claude", "test1") {
+		t.Error("After Reset, should allow sync")
+	}
+	if !throttler.ShouldSync("codex", "test2") {
+		t.Error("After Reset, should allow sync for all profiles")
+	}
+}
+
+// TestThrottlerDefaultInterval tests NewThrottler with invalid interval.
+func TestThrottlerDefaultInterval(t *testing.T) {
+	// Zero interval should use default
+	throttler := NewThrottler(0)
+	if throttler.minInterval != DefaultThrottleInterval {
+		t.Errorf("Zero interval should use default, got %v", throttler.minInterval)
+	}
+
+	// Negative interval should use default
+	throttler = NewThrottler(-1 * time.Second)
+	if throttler.minInterval != DefaultThrottleInterval {
+		t.Errorf("Negative interval should use default, got %v", throttler.minInterval)
+	}
+}
+
+// TestGlobalThrottler tests global throttler functions.
+func TestGlobalThrottler(t *testing.T) {
+	// Save current interval
+	original := GetThrottleInterval()
+	defer SetThrottleInterval(original)
+
+	// Test SetThrottleInterval
+	SetThrottleInterval(2 * time.Minute)
+	if GetThrottleInterval() != 2*time.Minute {
+		t.Errorf("GetThrottleInterval() = %v, want 2m", GetThrottleInterval())
+	}
+
+	// Test SetThrottleInterval with invalid value (should not change)
+	current := GetThrottleInterval()
+	SetThrottleInterval(0)
+	if GetThrottleInterval() != current {
+		t.Errorf("SetThrottleInterval(0) should not change interval")
+	}
+
+	// Test ResetThrottler
+	ResetThrottler() // Should not panic
+}
+
+// TestGetSyncStatus tests GetSyncStatus function.
+func TestGetSyncStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("XDG_DATA_HOME", oldXDG)
+
+	// Create state with various settings
+	syncDir := filepath.Join(tmpDir, "caam", "sync")
+	state := NewSyncState(syncDir)
+	state.Load()
+	state.Pool.Enable()
+	state.Pool.EnableAutoSync()
+	state.Pool.AddMachine(NewMachine("m1", "192.168.1.100"))
+	state.Pool.AddMachine(NewMachine("m2", "192.168.1.101"))
+	state.Pool.RecordFullSync()
+	state.AddToQueue("claude", "test", "m1", "error")
+	state.Save()
+
+	status, err := GetSyncStatus()
+	if err != nil {
+		t.Fatalf("GetSyncStatus() error = %v", err)
+	}
+
+	if !status.Enabled {
+		t.Error("status.Enabled should be true")
+	}
+	if !status.AutoSync {
+		t.Error("status.AutoSync should be true")
+	}
+	if status.MachineCount != 2 {
+		t.Errorf("status.MachineCount = %d, want 2", status.MachineCount)
+	}
+	if status.QueueCount != 1 {
+		t.Errorf("status.QueueCount = %d, want 1", status.QueueCount)
+	}
+	if status.LastFullSync.IsZero() {
+		t.Error("status.LastFullSync should not be zero")
+	}
+}
+
+// TestGetSyncStatusNilPool tests GetSyncStatus with nil pool.
+func TestGetSyncStatusNilPool(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("XDG_DATA_HOME", oldXDG)
+
+	// Create state with empty pool
+	syncDir := filepath.Join(tmpDir, "caam", "sync")
+	state := NewSyncState(syncDir)
+	state.Load()
+	state.Save()
+
+	status, err := GetSyncStatus()
+	if err != nil {
+		t.Fatalf("GetSyncStatus() error = %v", err)
+	}
+
+	// All should be defaults/zeros
+	if status.Enabled {
+		t.Error("status.Enabled should be false")
+	}
+	if status.MachineCount != 0 {
+		t.Errorf("status.MachineCount = %d, want 0", status.MachineCount)
+	}
+}
+
+// TestDefaultAutoSyncConfig tests DefaultAutoSyncConfig function.
+func TestDefaultAutoSyncConfig(t *testing.T) {
+	config := DefaultAutoSyncConfig()
+
+	if config.ThrottleInterval != DefaultThrottleInterval {
+		t.Errorf("ThrottleInterval = %v, want %v", config.ThrottleInterval, DefaultThrottleInterval)
+	}
+	if config.SyncTimeout != DefaultSyncTimeout {
+		t.Errorf("SyncTimeout = %v, want %v", config.SyncTimeout, DefaultSyncTimeout)
+	}
+	if config.Verbose {
+		t.Error("Verbose should default to false")
+	}
+}
+
