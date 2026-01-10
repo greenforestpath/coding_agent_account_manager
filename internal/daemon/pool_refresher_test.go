@@ -203,3 +203,70 @@ func TestDaemon_DefaultMaxConcurrent(t *testing.T) {
 		t.Errorf("MaxConcurrent = %d, want 3 (default)", stats.MaxConcurrent)
 	}
 }
+
+func TestPoolRefresher_GetTokenExpiry_UnknownProvider(t *testing.T) {
+	vault := authfile.NewVault(t.TempDir())
+	store := health.NewStorage(t.TempDir() + "/health.json")
+	refresher := NewPoolRefresher(vault, store)
+
+	_, err := refresher.getTokenExpiry("unknown", "profile")
+	if err == nil {
+		t.Error("expected error for unknown provider")
+	}
+	if err.Error() != "unknown provider: unknown" {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestPoolRefresher_GetTokenExpiry_ClaudeNoFile(t *testing.T) {
+	vault := authfile.NewVault(t.TempDir())
+	store := health.NewStorage(t.TempDir() + "/health.json")
+	refresher := NewPoolRefresher(vault, store)
+
+	_, err := refresher.getTokenExpiry("claude", "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent claude profile")
+	}
+}
+
+func TestPoolRefresher_GetTokenExpiry_CodexNoFile(t *testing.T) {
+	vault := authfile.NewVault(t.TempDir())
+	store := health.NewStorage(t.TempDir() + "/health.json")
+	refresher := NewPoolRefresher(vault, store)
+
+	_, err := refresher.getTokenExpiry("codex", "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent codex profile")
+	}
+}
+
+func TestPoolRefresher_GetTokenExpiry_GeminiNoFile(t *testing.T) {
+	vault := authfile.NewVault(t.TempDir())
+	store := health.NewStorage(t.TempDir() + "/health.json")
+	refresher := NewPoolRefresher(vault, store)
+
+	_, err := refresher.getTokenExpiry("gemini", "nonexistent")
+	if err == nil {
+		t.Error("expected error for nonexistent gemini profile")
+	}
+}
+
+func TestDaemonWithAuthPool_Verbose(t *testing.T) {
+	vault := authfile.NewVault(t.TempDir())
+	store := health.NewStorage(t.TempDir() + "/health.json")
+
+	cfg := &Config{
+		CheckInterval:    50 * time.Millisecond,
+		RefreshThreshold: time.Minute,
+		UseAuthPool:      true,
+		Verbose:          true,
+	}
+
+	d := New(vault, store, cfg)
+	if d == nil {
+		t.Fatal("New returned nil")
+	}
+	if d.authPool == nil {
+		t.Error("authPool should be initialized when UseAuthPool is true")
+	}
+}
