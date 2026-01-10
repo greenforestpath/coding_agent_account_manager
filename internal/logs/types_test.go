@@ -244,3 +244,64 @@ func TestScanResult_TimeWindow(t *testing.T) {
 		t.Errorf("Until = %v, want %v", result.Until, now)
 	}
 }
+
+func TestAggregate(t *testing.T) {
+	entries := []*LogEntry{
+		{Model: "gpt-4o", InputTokens: 100, OutputTokens: 200},
+		nil,
+		{Model: "gpt-4o-mini", InputTokens: 50, OutputTokens: 75},
+	}
+
+	usage := Aggregate(entries)
+	if usage.TotalTokens != 425 {
+		t.Errorf("Aggregate().TotalTokens = %d, want 425", usage.TotalTokens)
+	}
+	if len(usage.ByModel) != 2 {
+		t.Errorf("Aggregate().ByModel has %d entries, want 2", len(usage.ByModel))
+	}
+}
+
+func TestAggregateByModel(t *testing.T) {
+	entries := []*LogEntry{
+		{Model: "gpt-4o", InputTokens: 100, OutputTokens: 200},
+		{Model: "gpt-4o", InputTokens: 25, OutputTokens: 50},
+		{Model: "gpt-4o-mini", InputTokens: 10, OutputTokens: 20},
+	}
+
+	byModel := AggregateByModel(entries)
+	if len(byModel) != 2 {
+		t.Fatalf("AggregateByModel() has %d models, want 2", len(byModel))
+	}
+	if byModel["gpt-4o"].TotalTokens != 375 {
+		t.Errorf("gpt-4o TotalTokens = %d, want 375", byModel["gpt-4o"].TotalTokens)
+	}
+	if byModel["gpt-4o-mini"].TotalTokens != 30 {
+		t.Errorf("gpt-4o-mini TotalTokens = %d, want 30", byModel["gpt-4o-mini"].TotalTokens)
+	}
+}
+
+func TestAggregateByDay(t *testing.T) {
+	day1 := time.Date(2025, 1, 10, 10, 0, 0, 0, time.UTC)
+	day2 := time.Date(2025, 1, 11, 12, 0, 0, 0, time.UTC)
+
+	entries := []*LogEntry{
+		{Timestamp: day2, Model: "gpt-4o", InputTokens: 10, OutputTokens: 20},
+		{Timestamp: day1, Model: "gpt-4o", InputTokens: 100, OutputTokens: 200},
+		{Timestamp: day1.Add(2 * time.Hour), Model: "gpt-4o-mini", InputTokens: 5, OutputTokens: 5},
+		{Timestamp: time.Time{}, Model: "gpt-4o", InputTokens: 999, OutputTokens: 999},
+	}
+
+	daily := AggregateByDay(entries)
+	if len(daily) != 2 {
+		t.Fatalf("AggregateByDay() returned %d entries, want 2", len(daily))
+	}
+	if daily[0].Date != "2025-01-10" || daily[1].Date != "2025-01-11" {
+		t.Errorf("AggregateByDay() dates = [%s %s], want [2025-01-10 2025-01-11]", daily[0].Date, daily[1].Date)
+	}
+	if daily[0].Usage.TotalTokens != 310 {
+		t.Errorf("Day 1 TotalTokens = %d, want 310", daily[0].Usage.TotalTokens)
+	}
+	if daily[1].Usage.TotalTokens != 30 {
+		t.Errorf("Day 2 TotalTokens = %d, want 30", daily[1].Usage.TotalTokens)
+	}
+}

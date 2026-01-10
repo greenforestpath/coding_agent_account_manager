@@ -135,17 +135,30 @@ func ReadClaudeCredentials(path string) (accessToken string, accountID string, e
 			AccessToken string `json:"accessToken"`
 			AccountID   string `json:"accountId"`
 		} `json:"claudeAiOauth"`
+		OAuthToken  string `json:"oauthToken"`
+		AccessToken string `json:"access_token"`
+		AccessCamel string `json:"accessToken"`
 	}
 
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return "", "", err
 	}
 
-	if creds.ClaudeAiOauth == nil {
-		return "", "", fmt.Errorf("claudeAiOauth not found in credentials")
+	if creds.ClaudeAiOauth != nil {
+		return creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.AccountID, nil
 	}
 
-	return creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.AccountID, nil
+	if creds.OAuthToken != "" {
+		return creds.OAuthToken, "", nil
+	}
+	if creds.AccessToken != "" {
+		return creds.AccessToken, "", nil
+	}
+	if creds.AccessCamel != "" {
+		return creds.AccessCamel, "", nil
+	}
+
+	return "", "", fmt.Errorf("no access token found in credentials")
 }
 
 // ReadCodexCredentials reads the access token from Codex auth file.
@@ -164,6 +177,9 @@ func ReadCodexCredentials(path string) (accessToken string, accountID string, er
 			AccessToken string `json:"access_token"`
 			AccountID   string `json:"account_id"`
 		} `json:"tokens"`
+
+		AccessToken string `json:"access_token"`
+		AccountID   string `json:"account_id"`
 	}
 
 	if err := json.Unmarshal(data, &creds); err != nil {
@@ -178,6 +194,10 @@ func ReadCodexCredentials(path string) (accessToken string, accountID string, er
 	// Fall back to OAuth tokens
 	if creds.Tokens != nil && creds.Tokens.AccessToken != "" {
 		return creds.Tokens.AccessToken, creds.Tokens.AccountID, nil
+	}
+
+	if creds.AccessToken != "" {
+		return creds.AccessToken, creds.AccountID, nil
 	}
 
 	return "", "", fmt.Errorf("no access token found in credentials")

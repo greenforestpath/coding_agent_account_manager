@@ -537,10 +537,10 @@ func printSetupSummaryV2(detections []ProviderAuthDetection, savedCount int, bro
 	fmt.Println("  Quick commands:")
 	fmt.Println("    caam ls          - List all profiles")
 	fmt.Println("    caam status      - Show current status")
-	fmt.Println("    caam run <tool>/<profile>  - Run with a profile")
+	fmt.Println("    caam exec <tool> <profile> -- <command>  - Run with a profile")
 	fmt.Println()
 	fmt.Println("  Example:")
-	fmt.Println("    caam run claude/default -- --help")
+	fmt.Println("    caam exec claude default -- --help")
 	fmt.Println()
 
 	// Show providers without auth

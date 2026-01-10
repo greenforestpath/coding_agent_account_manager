@@ -81,6 +81,27 @@ func UpdateClaudeAuth(path string, resp *TokenResponse) error {
 		return fmt.Errorf("parse auth file: %w", err)
 	}
 
+	// If this is the modern Claude credentials format, update nested fields.
+	if rawOauth, ok := auth["claudeAiOauth"]; ok {
+		oauth, ok := rawOauth.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid claudeAiOauth format")
+		}
+
+		oauth["accessToken"] = resp.AccessToken
+		if resp.RefreshToken != "" {
+			oauth["refreshToken"] = resp.RefreshToken
+		}
+
+		newExpiry := claudeExpiryFromResponse(resp)
+		if !newExpiry.IsZero() {
+			oauth["expiresAt"] = newExpiry.UnixMilli()
+		}
+
+		auth["claudeAiOauth"] = oauth
+		return writeAuthFile(path, auth)
+	}
+
 	// Update fields (support both camelCase and snake_case as seen in wild)
 	if _, ok := auth["access_token"]; ok {
 		auth["access_token"] = resp.AccessToken
@@ -104,12 +125,7 @@ func UpdateClaudeAuth(path string, resp *TokenResponse) error {
 	// Handle expiry
 	// If response has expires_at (ISO8601), use it.
 	// If response has expires_in (seconds), calculate expires_at.
-	var newExpiry time.Time
-	if resp.ExpiresAt != "" {
-		newExpiry, _ = time.Parse(time.RFC3339, resp.ExpiresAt)
-	} else if resp.ExpiresIn > 0 {
-		newExpiry = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
-	}
+	newExpiry := claudeExpiryFromResponse(resp)
 
 	if !newExpiry.IsZero() {
 		expiryStr := newExpiry.Format(time.RFC3339)
@@ -122,7 +138,25 @@ func UpdateClaudeAuth(path string, resp *TokenResponse) error {
 		}
 	}
 
-	// Atomic write
+	return writeAuthFile(path, auth)
+}
+
+func claudeExpiryFromResponse(resp *TokenResponse) time.Time {
+	if resp == nil {
+		return time.Time{}
+	}
+	if resp.ExpiresAt != "" {
+		if parsed, err := time.Parse(time.RFC3339, resp.ExpiresAt); err == nil {
+			return parsed
+		}
+	}
+	if resp.ExpiresIn > 0 {
+		return time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second)
+	}
+	return time.Time{}
+}
+
+func writeAuthFile(path string, auth map[string]interface{}) error {
 	updatedData, err := json.MarshalIndent(auth, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal updated auth: %w", err)

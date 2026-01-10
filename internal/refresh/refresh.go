@@ -187,12 +187,44 @@ func getRefreshTokenFromJSON(path string) (string, error) {
 		return "", err
 	}
 
-	if val, ok := auth["refresh_token"].(string); ok && val != "" {
+	if val := readStringField(auth, "refresh_token", "refreshToken"); val != "" {
 		return val, nil
 	}
-	if val, ok := auth["refreshToken"].(string); ok && val != "" {
+
+	if val := readNestedStringField(auth, "tokens", "refresh_token", "refreshToken"); val != "" {
+		return val, nil
+	}
+
+	if val := readNestedStringField(auth, "claudeAiOauth", "refreshToken", "refresh_token"); val != "" {
 		return val, nil
 	}
 
 	return "", fmt.Errorf("refresh_token not found in %s", path)
+}
+
+func readStringField(m map[string]interface{}, keys ...string) string {
+	if m == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if val, ok := m[key].(string); ok && val != "" {
+			return val
+		}
+	}
+	return ""
+}
+
+func readNestedStringField(m map[string]interface{}, nestedKey string, keys ...string) string {
+	if m == nil {
+		return ""
+	}
+	raw, ok := m[nestedKey]
+	if !ok {
+		return ""
+	}
+	nested, ok := raw.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	return readStringField(nested, keys...)
 }

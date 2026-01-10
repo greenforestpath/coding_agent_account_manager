@@ -82,7 +82,25 @@ func UpdateCodexAuth(path string, resp *TokenResponse) error {
 		return fmt.Errorf("parse auth file: %w", err)
 	}
 
-	// Update fields
+	// Prefer updating nested tokens if present (newer format).
+	if rawTokens, ok := auth["tokens"]; ok {
+		tokens, ok := rawTokens.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid tokens format")
+		}
+
+		tokens["access_token"] = resp.AccessToken
+		if resp.RefreshToken != "" {
+			tokens["refresh_token"] = resp.RefreshToken
+		}
+		if resp.ExpiresIn > 0 {
+			tokens["expires_at"] = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second).Unix()
+		}
+		auth["tokens"] = tokens
+		return writeAuthFile(path, auth)
+	}
+
+	// Update root fields (legacy format).
 	auth["access_token"] = resp.AccessToken
 	if resp.RefreshToken != "" {
 		auth["refresh_token"] = resp.RefreshToken
@@ -93,41 +111,7 @@ func UpdateCodexAuth(path string, resp *TokenResponse) error {
 		auth["expires_at"] = time.Now().Add(time.Duration(resp.ExpiresIn) * time.Second).Unix()
 	}
 
-	// Atomic write
-	updatedData, err := json.MarshalIndent(auth, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal updated auth: %w", err)
-	}
-
-	tmpPath := path + ".tmp"
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-
-	if _, err := f.Write(updatedData); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("write temp file: %w", err)
-	}
-
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return fmt.Errorf("sync temp file: %w", err)
-	}
-
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("close temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename file: %w", err)
-	}
-
-	return nil
+	return writeAuthFile(path, auth)
 }
 
 // VerifyCodexToken verifies if a token works.

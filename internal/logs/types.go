@@ -5,7 +5,10 @@
 // log formats but they all get normalized to the common LogEntry type.
 package logs
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // LogEntry represents a single log entry from any provider.
 // Fields may be empty/zero depending on what the provider logs.
@@ -92,6 +95,80 @@ type ModelTokenUsage struct {
 	InputTokens  int64
 	OutputTokens int64
 	TotalTokens  int64
+}
+
+// DailyUsage represents aggregated usage for a single date.
+type DailyUsage struct {
+	Date    string                 // "YYYY-MM-DD"
+	Usage   *TokenUsage
+	ByModel map[string]*ModelTokenUsage
+}
+
+// Aggregate aggregates log entries into a TokenUsage summary.
+func Aggregate(entries []*LogEntry) *TokenUsage {
+	usage := NewTokenUsage()
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		usage.Add(entry)
+	}
+	return usage
+}
+
+// AggregateByModel groups entries by model.
+func AggregateByModel(entries []*LogEntry) map[string]*ModelTokenUsage {
+	usage := Aggregate(entries)
+	if usage.ByModel == nil {
+		return make(map[string]*ModelTokenUsage)
+	}
+	return usage.ByModel
+}
+
+// AggregateByDay groups entries by UTC date and aggregates each day.
+func AggregateByDay(entries []*LogEntry) []*DailyUsage {
+	byDay := make(map[string]*DailyUsage)
+
+	for _, entry := range entries {
+		if entry == nil || entry.Timestamp.IsZero() {
+			continue
+		}
+		day := entry.Timestamp.UTC().Format("2006-01-02")
+		du := byDay[day]
+		if du == nil {
+			du = &DailyUsage{
+				Date:  day,
+				Usage: NewTokenUsage(),
+			}
+			byDay[day] = du
+		}
+		du.Usage.Add(entry)
+		du.ByModel = du.Usage.ByModel
+	}
+
+	if len(byDay) == 0 {
+		return nil
+	}
+
+	dates := make([]string, 0, len(byDay))
+	for date := range byDay {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+
+	out := make([]*DailyUsage, 0, len(dates))
+	for _, date := range dates {
+		du := byDay[date]
+		if du.Usage == nil {
+			du.Usage = NewTokenUsage()
+		}
+		if du.ByModel == nil {
+			du.ByModel = du.Usage.ByModel
+		}
+		out = append(out, du)
+	}
+
+	return out
 }
 
 // ScanResult contains parsed log data from a Scanner.

@@ -203,6 +203,9 @@ func (c *SSHClient) hostKeyCallback() (ssh.HostKeyCallback, error) {
 		// Wrap to auto-add unknown hosts (TOFU)
 		return autoAddHostKeyCallback(callback, knownHostsPath), nil
 	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("load known_hosts: %w", err)
+	}
 
 	// No known_hosts file - create directory and auto-add
 	sshDir := filepath.Dir(knownHostsPath)

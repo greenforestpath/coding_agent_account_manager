@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -376,6 +378,70 @@ func TestUsageInfo_MostConstrainedWindow(t *testing.T) {
 				t.Errorf("MostConstrainedWindow().Utilization = %v, expected %v", util, tc.expected)
 			}
 		})
+	}
+}
+
+func TestReadClaudeCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	credentialsPath := filepath.Join(tmpDir, "credentials.json")
+	credentialsContent := `{"claudeAiOauth":{"accessToken":"tok-1","accountId":"acct-1"}}`
+	if err := os.WriteFile(credentialsPath, []byte(credentialsContent), 0600); err != nil {
+		t.Fatalf("write credentials.json: %v", err)
+	}
+
+	token, account, err := ReadClaudeCredentials(credentialsPath)
+	if err != nil {
+		t.Fatalf("ReadClaudeCredentials error: %v", err)
+	}
+	if token != "tok-1" || account != "acct-1" {
+		t.Fatalf("unexpected token/account: %q/%q", token, account)
+	}
+
+	legacyPath := filepath.Join(tmpDir, "legacy.json")
+	legacyContent := `{"oauthToken":"tok-legacy"}`
+	if err := os.WriteFile(legacyPath, []byte(legacyContent), 0600); err != nil {
+		t.Fatalf("write legacy.json: %v", err)
+	}
+
+	token, account, err = ReadClaudeCredentials(legacyPath)
+	if err != nil {
+		t.Fatalf("ReadClaudeCredentials legacy error: %v", err)
+	}
+	if token != "tok-legacy" || account != "" {
+		t.Fatalf("unexpected legacy token/account: %q/%q", token, account)
+	}
+}
+
+func TestReadCodexCredentials(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	rootPath := filepath.Join(tmpDir, "auth_root.json")
+	rootContent := `{"access_token":"root-token","account_id":"acct"}`
+	if err := os.WriteFile(rootPath, []byte(rootContent), 0600); err != nil {
+		t.Fatalf("write auth_root.json: %v", err)
+	}
+
+	token, account, err := ReadCodexCredentials(rootPath)
+	if err != nil {
+		t.Fatalf("ReadCodexCredentials root error: %v", err)
+	}
+	if token != "root-token" || account != "acct" {
+		t.Fatalf("unexpected root token/account: %q/%q", token, account)
+	}
+
+	tokensPath := filepath.Join(tmpDir, "auth_tokens.json")
+	tokensContent := `{"tokens":{"access_token":"nested-token","account_id":"acct-2"}}`
+	if err := os.WriteFile(tokensPath, []byte(tokensContent), 0600); err != nil {
+		t.Fatalf("write auth_tokens.json: %v", err)
+	}
+
+	token, account, err = ReadCodexCredentials(tokensPath)
+	if err != nil {
+		t.Fatalf("ReadCodexCredentials tokens error: %v", err)
+	}
+	if token != "nested-token" || account != "acct-2" {
+		t.Fatalf("unexpected tokens token/account: %q/%q", token, account)
 	}
 }
 

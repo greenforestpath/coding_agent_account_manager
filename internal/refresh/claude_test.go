@@ -109,3 +109,57 @@ func TestUpdateClaudeAuth(t *testing.T) {
 		t.Error("expires_at missing")
 	}
 }
+
+func TestUpdateClaudeAuth_CredentialsFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "credentials.json")
+
+	initialAuth := map[string]interface{}{
+		"claudeAiOauth": map[string]interface{}{
+			"accessToken":  "old-access",
+			"refreshToken": "old-refresh",
+			"expiresAt":    1700000000000,
+		},
+		"other_field": "preserve-me",
+	}
+	data, _ := json.Marshal(initialAuth)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write credentials.json: %v", err)
+	}
+
+	newResp := &TokenResponse{
+		AccessToken:  "new-access",
+		RefreshToken: "new-refresh",
+		ExpiresIn:    3600,
+	}
+
+	if err := UpdateClaudeAuth(path, newResp); err != nil {
+		t.Fatalf("UpdateClaudeAuth failed: %v", err)
+	}
+
+	updatedData, _ := os.ReadFile(path)
+	var updatedAuth map[string]interface{}
+	json.Unmarshal(updatedData, &updatedAuth)
+
+	oauthRaw, ok := updatedAuth["claudeAiOauth"]
+	if !ok {
+		t.Fatalf("claudeAiOauth missing after update")
+	}
+	oauth, ok := oauthRaw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("claudeAiOauth has unexpected type")
+	}
+
+	if oauth["accessToken"] != "new-access" {
+		t.Errorf("accessToken not updated")
+	}
+	if oauth["refreshToken"] != "new-refresh" {
+		t.Errorf("refreshToken not updated")
+	}
+	if _, ok := oauth["expiresAt"]; !ok {
+		t.Errorf("expiresAt missing after update")
+	}
+	if updatedAuth["other_field"] != "preserve-me" {
+		t.Errorf("other_field not preserved")
+	}
+}

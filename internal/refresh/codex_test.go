@@ -107,3 +107,57 @@ func TestUpdateCodexAuth(t *testing.T) {
 		t.Errorf("expires_at not updated correctly: %v", updatedAuth["expires_at"])
 	}
 }
+
+func TestUpdateCodexAuth_TokensFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "auth.json")
+
+	initialAuth := map[string]interface{}{
+		"tokens": map[string]interface{}{
+			"access_token":  "old-access",
+			"refresh_token": "old-refresh",
+			"expires_at":    1500000000,
+		},
+		"other_field": "preserve-me",
+	}
+	data, _ := json.Marshal(initialAuth)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+
+	newResp := &TokenResponse{
+		AccessToken:  "new-access",
+		RefreshToken: "new-refresh",
+		ExpiresIn:    3600,
+	}
+
+	if err := UpdateCodexAuth(path, newResp); err != nil {
+		t.Fatalf("UpdateCodexAuth failed: %v", err)
+	}
+
+	updatedData, _ := os.ReadFile(path)
+	var updatedAuth map[string]interface{}
+	json.Unmarshal(updatedData, &updatedAuth)
+
+	tokensRaw, ok := updatedAuth["tokens"]
+	if !ok {
+		t.Fatalf("tokens missing after update")
+	}
+	tokens, ok := tokensRaw.(map[string]interface{})
+	if !ok {
+		t.Fatalf("tokens has unexpected type")
+	}
+
+	if tokens["access_token"] != "new-access" {
+		t.Errorf("access_token not updated")
+	}
+	if tokens["refresh_token"] != "new-refresh" {
+		t.Errorf("refresh_token not updated")
+	}
+	if val, ok := tokens["expires_at"].(float64); !ok || val <= 1500000000 {
+		t.Errorf("expires_at not updated correctly: %v", tokens["expires_at"])
+	}
+	if updatedAuth["other_field"] != "preserve-me" {
+		t.Errorf("other_field not preserved")
+	}
+}

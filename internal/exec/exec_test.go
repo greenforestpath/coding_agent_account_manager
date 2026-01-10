@@ -2,7 +2,11 @@ package exec
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider"
@@ -392,4 +396,437 @@ func TestProviderIntegration(t *testing.T) {
 			t.Error("Env() failed")
 		}
 	})
+}
+
+// =============================================================================
+// Run Method Tests
+// =============================================================================
+
+func TestRun_EnvError(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "true",
+		envErr:     context.DeadlineExceeded,
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		NoLock:   true,
+	})
+
+	if err == nil {
+		t.Fatal("Run() should return error when Env() fails")
+	}
+	if !strings.Contains(err.Error(), "get provider env") {
+		t.Errorf("Error should mention 'get provider env', got: %v", err)
+	}
+}
+
+func TestRun_LockError(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	// Create a profile directory and simulate a stale lock
+	// by holding a lock ourselves
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	// Lock the profile
+	if err := prof.LockWithCleanup(); err != nil {
+		t.Fatalf("Failed to acquire lock: %v", err)
+	}
+	defer prof.Unlock()
+
+	// Create a second profile pointing to same location
+	prof2 := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "true",
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof2,
+		Provider: mock,
+		NoLock:   false, // Try to acquire lock
+	})
+
+	if err == nil {
+		t.Fatal("Run() should return error when profile is already locked")
+	}
+	if !strings.Contains(err.Error(), "lock profile") {
+		t.Errorf("Error should mention 'lock profile', got: %v", err)
+	}
+}
+
+func TestRun_CommandNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "/nonexistent/command/path",
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		NoLock:   true,
+	})
+
+	if err == nil {
+		t.Fatal("Run() should return error when command not found")
+	}
+	if !strings.Contains(err.Error(), "run command") {
+		t.Errorf("Error should mention 'run command', got: %v", err)
+	}
+}
+
+func TestRun_WorkDirOption(t *testing.T) {
+	tmpDir := t.TempDir()
+	workDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	// Create a marker file in workDir
+	markerFile := filepath.Join(workDir, "marker.txt")
+	if err := os.WriteFile(markerFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("Failed to create marker file: %v", err)
+	}
+
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "test", // test -f marker.txt
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	// This will exit 0 if marker.txt exists in workDir, exit 1 otherwise
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		Args:     []string{"-f", "marker.txt"},
+		WorkDir:  workDir,
+		NoLock:   true,
+	})
+
+	// test -f marker.txt should succeed (exit 0) so no error
+	if err != nil {
+		t.Errorf("Run() with WorkDir error = %v", err)
+	}
+}
+
+func TestRun_EnvironmentMerging(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	// Provider provides PROVIDER_VAR, opts provides CUSTOM_VAR
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "sh",
+		envVars:    map[string]string{"PROVIDER_VAR": "provider_value"},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	// Run a command that checks for our env vars
+	// sh -c 'test "$PROVIDER_VAR" = "provider_value" && test "$CUSTOM_VAR" = "custom_value"'
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		Args:     []string{"-c", `test "$PROVIDER_VAR" = "provider_value" && test "$CUSTOM_VAR" = "custom_value"`},
+		Env:      map[string]string{"CUSTOM_VAR": "custom_value"},
+		NoLock:   true,
+	})
+
+	if err != nil {
+		t.Errorf("Environment variables not properly merged: %v", err)
+	}
+}
+
+func TestRun_EnvironmentOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	// Provider provides VAR=provider, opts overrides with VAR=custom
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "sh",
+		envVars:    map[string]string{"VAR": "provider"},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	// Custom env should override provider env
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		Args:     []string{"-c", `test "$VAR" = "custom"`},
+		Env:      map[string]string{"VAR": "custom"},
+		NoLock:   true,
+	})
+
+	if err != nil {
+		t.Errorf("Custom env should override provider env: %v", err)
+	}
+}
+
+func TestRun_ProfileMetadataUpdated(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "test",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	beforeRun := time.Now()
+
+	mock := &mockProvider{
+		id:         "test",
+		defaultBin: "true",
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		NoLock:   true,
+	})
+
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// LastUsedAt should have been updated
+	if prof.LastUsedAt.Before(beforeRun) {
+		t.Error("LastUsedAt was not updated after Run()")
+	}
+}
+
+func TestRun_CodexSessionCapture(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "codex",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	// Simulate codex output with session ID
+	mock := &mockProvider{
+		id:         "codex", // Must be "codex" to trigger session capture
+		defaultBin: "echo",
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		Args:     []string{"To continue this session, run codex resume 12345678-1234-1234-1234-123456789abc"},
+		NoLock:   true,
+	})
+
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Session ID should have been captured
+	if prof.LastSessionID != "12345678-1234-1234-1234-123456789abc" {
+		t.Errorf("LastSessionID = %q, want %q", prof.LastSessionID, "12345678-1234-1234-1234-123456789abc")
+	}
+}
+
+// Note: Testing context cancellation is difficult because Run() calls os.Exit()
+// when a command exits with a non-zero exit code (including when killed by context).
+// This behavior is by design - see the comment in Run() about propagating exit codes.
+// Context cancellation is better tested through E2E integration tests.
+
+func TestRun_RateLimitCallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "claude",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	callbackCalled := make(chan struct{}, 1)
+
+	mock := &mockProvider{
+		id:         "claude", // Must match a known provider for rate limit detection
+		defaultBin: "echo",
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		Args:     []string{"Error: rate limit exceeded"}, // Claude rate limit message
+		NoLock:   true,
+		OnRateLimit: func(ctx context.Context) error {
+			select {
+			case callbackCalled <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+		RateLimitDelay: 0, // Immediate callback
+	})
+
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Wait for callback (with timeout)
+	select {
+	case <-callbackCalled:
+		// Success - callback was invoked
+	case <-time.After(2 * time.Second):
+		t.Error("Rate limit callback was not invoked")
+	}
+}
+
+func TestRun_RateLimitCallbackWithDelay(t *testing.T) {
+	tmpDir := t.TempDir()
+	prof := &profile.Profile{
+		Name:     "test",
+		Provider: "claude",
+		BasePath: tmpDir,
+	}
+
+	// Ensure profile directory exists
+	if err := os.MkdirAll(prof.BasePath, 0700); err != nil {
+		t.Fatalf("Failed to create profile dir: %v", err)
+	}
+
+	callbackTime := make(chan time.Time, 1)
+
+	mock := &mockProvider{
+		id:         "claude",
+		defaultBin: "echo",
+		envVars:    map[string]string{},
+	}
+
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+
+	startTime := time.Now()
+
+	err := runner.Run(context.Background(), RunOptions{
+		Profile:  prof,
+		Provider: mock,
+		Args:     []string{"Error: rate limit exceeded"},
+		NoLock:   true,
+		OnRateLimit: func(ctx context.Context) error {
+			select {
+			case callbackTime <- time.Now():
+			default:
+			}
+			return nil
+		},
+		RateLimitDelay: 200 * time.Millisecond,
+	})
+
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	select {
+	case t1 := <-callbackTime:
+		elapsed := t1.Sub(startTime)
+		if elapsed < 150*time.Millisecond {
+			t.Errorf("Callback invoked too early: %v", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Rate limit callback was not invoked")
+	}
 }
