@@ -1,15 +1,28 @@
 package cmd
 
 import (
+	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
 	"text/tabwriter"
 	"time"
 
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/logs"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/pricing"
 	"github.com/spf13/cobra"
 )
+
+// Subscription costs per month (approximate)
+var subscriptionCosts = map[string]float64{
+	"claude": 200.0, // Claude Max / Claude Pro - varies by plan
+	"codex":  200.0, // ChatGPT Pro
+	"gemini": 250.0, // Gemini Advanced
+}
 
 var costCmd = &cobra.Command{
 	Use:   "cost",
@@ -63,10 +76,37 @@ Examples:
 	RunE: runCostRates,
 }
 
+var costTokensCmd = &cobra.Command{
+	Use:   "tokens [provider]",
+	Short: "Analyze token costs from CLI logs",
+	Long: `Analyze token costs by scanning CLI logs and comparing to API pricing.
+
+This command scans local CLI logs to calculate actual token usage and estimates
+what the equivalent API cost would be. This helps you understand the value
+you're getting from your subscription.
+
+Examples:
+  caam cost tokens                    # Show costs for all providers (last 30 days)
+  caam cost tokens claude             # Show Claude costs only
+  caam cost tokens --last 168h        # Show costs for last 7 days (168 hours)
+  caam cost tokens --last 24h         # Show costs for last 24 hours
+  caam cost tokens --format json      # Output as JSON
+  caam cost tokens --format csv       # Output as CSV
+
+The cost comparison shows:
+  - Total tokens used broken down by type (input/output/cache)
+  - Per-model token usage and costs
+  - Equivalent API pricing (what you'd pay without subscription)
+  - Subscription value comparison`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runCostTokens,
+}
+
 func init() {
 	rootCmd.AddCommand(costCmd)
 	costCmd.AddCommand(costSessionsCmd)
 	costCmd.AddCommand(costRatesCmd)
+	costCmd.AddCommand(costTokensCmd)
 
 	// Cost summary flags
 	costCmd.Flags().String("provider", "", "filter by provider (claude, codex, gemini)")
@@ -84,6 +124,10 @@ func init() {
 	costRatesCmd.Flags().String("set", "", "set rates for provider (requires --per-minute or --per-session)")
 	costRatesCmd.Flags().Int("per-minute", -1, "cents per minute (use with --set)")
 	costRatesCmd.Flags().Int("per-session", -1, "cents per session (use with --set)")
+
+	// Tokens flags
+	costTokensCmd.Flags().DurationP("last", "l", 30*24*time.Hour, "time period to analyze (e.g., 7d, 30d, 24h)")
+	costTokensCmd.Flags().StringP("format", "f", "table", "output format: table, json, csv")
 }
 
 func runCostSummary(cmd *cobra.Command, args []string) error {
@@ -422,4 +466,369 @@ func formatDollars(cents int) string {
 	}
 	dollars := float64(cents) / 100.0
 	return fmt.Sprintf("$%.2f", dollars)
+}
+
+// =============================================================================
+// Token Cost Analysis (caam cost tokens)
+// =============================================================================
+
+// TokenCostAnalysis holds the token cost analysis results
+type TokenCostAnalysis struct {
+	Provider          string           `json:"provider"`
+	Period            string           `json:"period"`
+	Since             time.Time        `json:"since"`
+	Until             time.Time        `json:"until"`
+	TotalTokens       int64            `json:"total_tokens"`
+	InputTokens       int64            `json:"input_tokens"`
+	OutputTokens      int64            `json:"output_tokens"`
+	CacheReadTokens   int64            `json:"cache_read_tokens"`
+	CacheCreateTokens int64            `json:"cache_create_tokens"`
+	ByModel           []TokenModelCost `json:"by_model"`
+	TotalAPICost      float64          `json:"total_api_cost"`
+	SubscriptionCost  float64          `json:"subscription_cost,omitempty"`
+	Savings           float64          `json:"savings,omitempty"`
+	SavingsPercent    float64          `json:"savings_percent,omitempty"`
+}
+
+// TokenModelCost holds per-model cost breakdown
+type TokenModelCost struct {
+	Model        string  `json:"model"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalTokens  int64   `json:"total_tokens"`
+	Percent      float64 `json:"percent"`
+	APICost      float64 `json:"api_cost"`
+}
+
+func runCostTokens(cmd *cobra.Command, args []string) error {
+	period, _ := cmd.Flags().GetDuration("last")
+	format, _ := cmd.Flags().GetString("format")
+
+	// Parse provider argument
+	var providers []string
+	if len(args) > 0 {
+		providers = []string{strings.ToLower(args[0])}
+	} else {
+		providers = []string{"claude", "codex", "gemini"}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	out := cmd.OutOrStdout()
+	since := time.Now().Add(-period)
+
+	// Initialize log scanners
+	scanner := logs.NewMultiScanner()
+	scanner.Register("claude", logs.NewClaudeScanner())
+	scanner.Register("codex", logs.NewCodexScanner())
+	scanner.Register("gemini", logs.NewGeminiScanner())
+
+	var analyses []TokenCostAnalysis
+
+	for _, provider := range providers {
+		providerScanner := scanner.Scanner(provider)
+		if providerScanner == nil {
+			continue
+		}
+
+		result, err := providerScanner.Scan(ctx, "", since)
+		if err != nil {
+			if format != "json" {
+				fmt.Fprintf(out, "%s: error scanning logs: %v\n", provider, err)
+			}
+			continue
+		}
+
+		entries := result.Entries
+		if len(entries) == 0 {
+			continue
+		}
+
+		analysis := analyzeTokenCosts(provider, entries, since, time.Now(), period)
+		analyses = append(analyses, analysis)
+	}
+
+	if len(analyses) == 0 {
+		if format == "json" {
+			fmt.Fprintln(out, "[]")
+		} else {
+			fmt.Fprintln(out, "No log data found for the specified period.")
+		}
+		return nil
+	}
+
+	return renderTokenCostAnalysis(out, format, analyses)
+}
+
+func analyzeTokenCosts(provider string, entries []*logs.LogEntry, since, until time.Time, period time.Duration) TokenCostAnalysis {
+	usage := logs.Aggregate(entries)
+
+	analysis := TokenCostAnalysis{
+		Provider:          provider,
+		Period:            formatTokenPeriod(period),
+		Since:             since,
+		Until:             until,
+		TotalTokens:       usage.TotalTokens,
+		InputTokens:       usage.InputTokens,
+		OutputTokens:      usage.OutputTokens,
+		CacheReadTokens:   usage.CacheReadTokens,
+		CacheCreateTokens: usage.CacheCreateTokens,
+	}
+
+	// Calculate per-model costs
+	var totalAPICost float64
+	modelCosts := make([]TokenModelCost, 0, len(usage.ByModel))
+
+	for modelName, mu := range usage.ByModel {
+		mc := TokenModelCost{
+			Model:        modelName,
+			InputTokens:  mu.InputTokens,
+			OutputTokens: mu.OutputTokens,
+			TotalTokens:  mu.TotalTokens,
+		}
+
+		if usage.TotalTokens > 0 {
+			mc.Percent = float64(mu.TotalTokens) / float64(usage.TotalTokens) * 100
+		}
+
+		// Calculate API cost for this model
+		modelUsage := &logs.TokenUsage{
+			InputTokens:  mu.InputTokens,
+			OutputTokens: mu.OutputTokens,
+			ByModel:      map[string]*logs.ModelTokenUsage{modelName: mu},
+		}
+		// Distribute cache tokens proportionally if single model
+		if len(usage.ByModel) == 1 {
+			modelUsage.CacheReadTokens = usage.CacheReadTokens
+			modelUsage.CacheCreateTokens = usage.CacheCreateTokens
+		}
+
+		mc.APICost = pricing.CalculateCost(modelUsage, modelName, provider)
+		totalAPICost += mc.APICost
+
+		modelCosts = append(modelCosts, mc)
+	}
+
+	// Sort by usage descending
+	sort.Slice(modelCosts, func(i, j int) bool {
+		return modelCosts[i].TotalTokens > modelCosts[j].TotalTokens
+	})
+
+	analysis.ByModel = modelCosts
+	analysis.TotalAPICost = totalAPICost
+
+	// Calculate subscription comparison (prorated for period)
+	if subCost, ok := subscriptionCosts[provider]; ok {
+		// Prorate subscription cost for the analysis period
+		daysInPeriod := period.Hours() / 24
+		monthlyFraction := daysInPeriod / 30
+		proratedSub := subCost * monthlyFraction
+
+		analysis.SubscriptionCost = proratedSub
+		analysis.Savings = totalAPICost - proratedSub
+		if totalAPICost > 0 {
+			analysis.SavingsPercent = (analysis.Savings / totalAPICost) * 100
+		}
+	}
+
+	return analysis
+}
+
+func formatTokenPeriod(d time.Duration) string {
+	hours := int(d.Hours())
+	if hours < 24 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	days := hours / 24
+	return fmt.Sprintf("%dd", days)
+}
+
+func renderTokenCostAnalysis(w io.Writer, format string, analyses []TokenCostAnalysis) error {
+	format = strings.ToLower(strings.TrimSpace(format))
+
+	switch format {
+	case "json":
+		data, err := json.MarshalIndent(analyses, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(w, string(data))
+		return nil
+
+	case "csv":
+		return renderTokenCostCSV(w, analyses)
+
+	case "table", "":
+		return renderTokenCostTable(w, analyses)
+
+	default:
+		return fmt.Errorf("unsupported format: %s", format)
+	}
+}
+
+func renderTokenCostTable(w io.Writer, analyses []TokenCostAnalysis) error {
+	for i, a := range analyses {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+
+		// Header
+		fmt.Fprintf(w, "TOKEN COST ANALYSIS - %s (Last %s)\n", strings.ToUpper(a.Provider), a.Period)
+		fmt.Fprintln(w, strings.Repeat("=", 70))
+
+		// Summary
+		fmt.Fprintln(w, "SUMMARY")
+		fmt.Fprintln(w, strings.Repeat("-", 70))
+		fmt.Fprintf(w, "  Total tokens:     %s\n", formatTokenCount(a.TotalTokens))
+		fmt.Fprintf(w, "    Input:          %s (%d%%)\n",
+			formatTokenCount(a.InputTokens),
+			tokenPercentage(a.InputTokens, a.TotalTokens))
+		fmt.Fprintf(w, "    Output:         %s (%d%%)\n",
+			formatTokenCount(a.OutputTokens),
+			tokenPercentage(a.OutputTokens, a.TotalTokens))
+		if a.CacheReadTokens > 0 {
+			fmt.Fprintf(w, "    Cache read:     %s (%d%%)\n",
+				formatTokenCount(a.CacheReadTokens),
+				tokenPercentage(a.CacheReadTokens, a.TotalTokens))
+		}
+		if a.CacheCreateTokens > 0 {
+			fmt.Fprintf(w, "    Cache create:   %s (%d%%)\n",
+				formatTokenCount(a.CacheCreateTokens),
+				tokenPercentage(a.CacheCreateTokens, a.TotalTokens))
+		}
+
+		// Model breakdown
+		if len(a.ByModel) > 0 {
+			fmt.Fprintln(w)
+			fmt.Fprintln(w, "MODEL BREAKDOWN")
+			fmt.Fprintln(w, strings.Repeat("-", 70))
+
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "  MODEL\tTOKENS\tUSAGE\tAPI COST")
+
+			for _, mc := range a.ByModel {
+				bar := tokenProgressBar(mc.Percent, 20)
+				fmt.Fprintf(tw, "  %s\t%s\t%s %.0f%%\t$%.2f\n",
+					truncateTokenModel(mc.Model, 20),
+					formatTokenCount(mc.TotalTokens),
+					bar,
+					mc.Percent,
+					mc.APICost)
+			}
+			tw.Flush()
+		}
+
+		// Cost comparison
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "COST COMPARISON")
+		fmt.Fprintln(w, strings.Repeat("-", 70))
+		fmt.Fprintf(w, "  If pay-per-token:   $%.2f\n", a.TotalAPICost)
+
+		if a.SubscriptionCost > 0 {
+			fmt.Fprintf(w, "  Subscription cost:  $%.2f (prorated for %s)\n", a.SubscriptionCost, a.Period)
+			if a.Savings > 0 {
+				fmt.Fprintf(w, "  Your savings:       $%.2f (%.0f%%)\n", a.Savings, a.SavingsPercent)
+			} else if a.Savings < 0 {
+				fmt.Fprintf(w, "  You paid extra:     $%.2f\n", -a.Savings)
+			} else {
+				fmt.Fprintf(w, "  Break-even\n")
+			}
+		}
+	}
+
+	return nil
+}
+
+func renderTokenCostCSV(w io.Writer, analyses []TokenCostAnalysis) error {
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	// Write header
+	if err := cw.Write([]string{
+		"provider", "period", "model", "input_tokens", "output_tokens",
+		"cache_read_tokens", "cache_create_tokens", "total_tokens",
+		"usage_percent", "api_cost", "subscription_cost", "savings",
+	}); err != nil {
+		return err
+	}
+
+	for _, a := range analyses {
+		for _, mc := range a.ByModel {
+			record := []string{
+				a.Provider,
+				a.Period,
+				mc.Model,
+				fmt.Sprintf("%d", mc.InputTokens),
+				fmt.Sprintf("%d", mc.OutputTokens),
+				fmt.Sprintf("%d", a.CacheReadTokens),
+				fmt.Sprintf("%d", a.CacheCreateTokens),
+				fmt.Sprintf("%d", mc.TotalTokens),
+				fmt.Sprintf("%.2f", mc.Percent),
+				fmt.Sprintf("%.2f", mc.APICost),
+				fmt.Sprintf("%.2f", a.SubscriptionCost),
+				fmt.Sprintf("%.2f", a.Savings),
+			}
+			if err := cw.Write(record); err != nil {
+				return err
+			}
+		}
+
+		// If no models, write a summary row
+		if len(a.ByModel) == 0 {
+			record := []string{
+				a.Provider,
+				a.Period,
+				"",
+				fmt.Sprintf("%d", a.InputTokens),
+				fmt.Sprintf("%d", a.OutputTokens),
+				fmt.Sprintf("%d", a.CacheReadTokens),
+				fmt.Sprintf("%d", a.CacheCreateTokens),
+				fmt.Sprintf("%d", a.TotalTokens),
+				"100.00",
+				fmt.Sprintf("%.2f", a.TotalAPICost),
+				fmt.Sprintf("%.2f", a.SubscriptionCost),
+				fmt.Sprintf("%.2f", a.Savings),
+			}
+			if err := cw.Write(record); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func formatTokenCount(tokens int64) string {
+	if tokens >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1_000_000)
+	} else if tokens >= 1_000 {
+		return fmt.Sprintf("%.1fK", float64(tokens)/1_000)
+	}
+	return fmt.Sprintf("%d", tokens)
+}
+
+func tokenPercentage(part, total int64) int {
+	if total == 0 {
+		return 0
+	}
+	return int(float64(part) / float64(total) * 100)
+}
+
+func tokenProgressBar(percent float64, width int) string {
+	filled := int(percent / 100 * float64(width))
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	return strings.Repeat("#", filled) + strings.Repeat("-", width-filled)
+}
+
+func truncateTokenModel(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
