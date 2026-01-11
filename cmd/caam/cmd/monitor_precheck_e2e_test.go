@@ -43,9 +43,17 @@ func createTestProfile(t *testing.T, h *testutil.TestHarness, provider, profileN
 		t.Fatalf("Failed to create profile dir: %v", err)
 	}
 
-	authFile := ".credentials.json"
-	if provider == "codex" {
+	// Determine auth file name based on provider
+	var authFile string
+	switch provider {
+	case "claude":
+		authFile = ".credentials.json"
+	case "codex":
 		authFile = "auth.json"
+	case "gemini":
+		authFile = "settings.json"
+	default:
+		authFile = "auth.json" // fallback
 	}
 
 	authPath := filepath.Join(profileDir, authFile)
@@ -54,8 +62,8 @@ func createTestProfile(t *testing.T, h *testutil.TestHarness, provider, profileN
 	}
 
 	h.Log.Info("Created test profile", map[string]interface{}{
-		"provider": provider,
-		"profile":  profileName,
+		"provider":  provider,
+		"profile":   profileName,
 		"auth_path": authPath,
 	})
 }
@@ -100,7 +108,7 @@ func TestE2E_MonitorTableFormat(t *testing.T) {
 
 	h.Log.SetStep("test_table_format")
 
-	// Run monitor with --once and --no-fetch to avoid API calls
+	// Run monitor with --once to get single snapshot (will attempt API calls)
 	output, err := executeMonitorCommand("--format", "table", "--once", "--provider", "claude")
 
 	h.Log.Info("Monitor table output", map[string]interface{}{
@@ -163,14 +171,14 @@ func TestE2E_MonitorJSONFormat(t *testing.T) {
 		// Verify it's valid JSON
 		var result map[string]interface{}
 		jsonErr := json.Unmarshal([]byte(strings.TrimSpace(output)), &result)
-		if jsonErr == nil {
-			assert.Contains(t, result, "updated_at", "JSON should contain updated_at")
-			assert.Contains(t, result, "profiles", "JSON should contain profiles")
+		require.NoError(t, jsonErr, "Output should be valid JSON")
 
-			h.Log.Info("Monitor JSON parsed", map[string]interface{}{
-				"keys": getMapKeys(result),
-			})
-		}
+		assert.Contains(t, result, "updated_at", "JSON should contain updated_at")
+		assert.Contains(t, result, "profiles", "JSON should contain profiles")
+
+		h.Log.Info("Monitor JSON parsed", map[string]interface{}{
+			"keys": getMapKeys(result),
+		})
 	}
 }
 

@@ -124,7 +124,7 @@ func BenchmarkCalculateBurnRateParallel(b *testing.B) {
 func BenchmarkBurnRateInfoProjectDepletion(b *testing.B) {
 	info := &BurnRateInfo{
 		TokensPerHour:   10000,
-		TokensPerMinute: 10000 / 60,
+		TokensPerMinute: 10000.0 / 60.0,
 		Confidence:      0.9,
 	}
 
@@ -141,7 +141,7 @@ func BenchmarkBurnRateInfoProjectDepletion(b *testing.B) {
 func BenchmarkBurnRateInfoProjectUsageAt(b *testing.B) {
 	info := &BurnRateInfo{
 		TokensPerHour:   10000,
-		TokensPerMinute: 10000 / 60,
+		TokensPerMinute: 10000.0 / 60.0,
 		Confidence:      0.9,
 	}
 
