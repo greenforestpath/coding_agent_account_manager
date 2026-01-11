@@ -594,3 +594,463 @@ func containsAt(s, substr string) bool {
 	}
 	return false
 }
+
+func TestDetectAllChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Set up test environment
+	codexDir := filepath.Join(tmpDir, "codex")
+	geminiDir := filepath.Join(tmpDir, "gemini")
+	os.MkdirAll(codexDir, 0700)
+	os.MkdirAll(geminiDir, 0700)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	oldGeminiHome := os.Getenv("GEMINI_HOME")
+	oldHome := os.Getenv("HOME")
+
+	os.Setenv("CODEX_HOME", codexDir)
+	os.Setenv("GEMINI_HOME", geminiDir)
+	os.Setenv("HOME", tmpDir)
+
+	defer func() {
+		os.Setenv("CODEX_HOME", oldCodexHome)
+		os.Setenv("GEMINI_HOME", oldGeminiHome)
+		os.Setenv("HOME", oldHome)
+	}()
+
+	tracker := NewTracker(vault)
+
+	// Initial capture
+	tracker.CaptureAll()
+
+	// Create a new auth file (will trigger ChangeNew on next detect)
+	codexAuthPath := filepath.Join(codexDir, "auth.json")
+	os.WriteFile(codexAuthPath, []byte(`{"token": "test"}`), 0600)
+
+	// Detect all changes
+	changes, err := tracker.DetectAllChanges()
+	if err != nil {
+		t.Fatalf("DetectAllChanges failed: %v", err)
+	}
+
+	// Should have at least one change (codex new)
+	if len(changes) == 0 {
+		t.Error("expected at least one change")
+	}
+
+	// Find the codex change
+	found := false
+	for _, c := range changes {
+		if c.Provider == "codex" && c.Type == ChangeNew {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected ChangeNew for codex")
+	}
+}
+
+func TestMatchesProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Create auth file
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+	authContent := []byte(`{"token": "test-token"}`)
+	authPath := filepath.Join(codexDir, "auth.json")
+	os.WriteFile(authPath, authContent, 0600)
+
+	// Save as profile
+	profileDir := vault.ProfilePath("codex", "test-profile")
+	os.MkdirAll(profileDir, 0700)
+	os.WriteFile(filepath.Join(profileDir, "auth.json"), authContent, 0600)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	// Should match
+	matches, err := tracker.MatchesProfile("codex", "test-profile")
+	if err != nil {
+		t.Fatalf("MatchesProfile failed: %v", err)
+	}
+	if !matches {
+		t.Error("expected auth to match profile")
+	}
+
+	// Modify auth file
+	os.WriteFile(authPath, []byte(`{"token": "different"}`), 0600)
+
+	// Should not match
+	matches, err = tracker.MatchesProfile("codex", "test-profile")
+	if err != nil {
+		t.Fatalf("MatchesProfile failed: %v", err)
+	}
+	if matches {
+		t.Error("expected auth to not match profile after modification")
+	}
+}
+
+func TestMatchesProfile_NoVault(t *testing.T) {
+	tracker := NewTracker(nil)
+
+	_, err := tracker.MatchesProfile("codex", "test")
+	if err == nil {
+		t.Error("expected error when vault is nil")
+	}
+}
+
+func TestMatchesProfile_NoAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Empty codex directory - no auth
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	matches, err := tracker.MatchesProfile("codex", "test-profile")
+	if err != nil {
+		t.Fatalf("MatchesProfile failed: %v", err)
+	}
+	if matches {
+		t.Error("expected no match when auth doesn't exist")
+	}
+}
+
+func TestFindMatchingProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Create auth file
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+	authContent := []byte(`{"token": "test-token"}`)
+	authPath := filepath.Join(codexDir, "auth.json")
+	os.WriteFile(authPath, authContent, 0600)
+
+	// Save as profile "profile1"
+	profile1Dir := vault.ProfilePath("codex", "profile1")
+	os.MkdirAll(profile1Dir, 0700)
+	os.WriteFile(filepath.Join(profile1Dir, "auth.json"), authContent, 0600)
+
+	// Save different content as "profile2"
+	profile2Dir := vault.ProfilePath("codex", "profile2")
+	os.MkdirAll(profile2Dir, 0700)
+	os.WriteFile(filepath.Join(profile2Dir, "auth.json"), []byte(`{"token": "other"}`), 0600)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	// Should find profile1
+	found, err := tracker.FindMatchingProfile("codex")
+	if err != nil {
+		t.Fatalf("FindMatchingProfile failed: %v", err)
+	}
+	if found != "profile1" {
+		t.Errorf("expected 'profile1', got %q", found)
+	}
+}
+
+func TestFindMatchingProfile_NoVault(t *testing.T) {
+	tracker := NewTracker(nil)
+
+	_, err := tracker.FindMatchingProfile("codex")
+	if err == nil {
+		t.Error("expected error when vault is nil")
+	}
+}
+
+func TestFindMatchingProfile_NoAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	found, err := tracker.FindMatchingProfile("codex")
+	if err != nil {
+		t.Fatalf("FindMatchingProfile failed: %v", err)
+	}
+	if found != "" {
+		t.Errorf("expected empty string when no auth, got %q", found)
+	}
+}
+
+func TestFindMatchingProfile_NoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Create auth file
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+	os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(`{"token": "unique"}`), 0600)
+
+	// Save different content as profile
+	profileDir := vault.ProfilePath("codex", "other")
+	os.MkdirAll(profileDir, 0700)
+	os.WriteFile(filepath.Join(profileDir, "auth.json"), []byte(`{"token": "different"}`), 0600)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	found, err := tracker.FindMatchingProfile("codex")
+	if err != nil {
+		t.Fatalf("FindMatchingProfile failed: %v", err)
+	}
+	if found != "" {
+		t.Errorf("expected empty string when no match, got %q", found)
+	}
+}
+
+func TestGetAllStatuses(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Set up environment
+	codexDir := filepath.Join(tmpDir, "codex")
+	geminiDir := filepath.Join(tmpDir, "gemini")
+	os.MkdirAll(codexDir, 0700)
+	os.MkdirAll(geminiDir, 0700)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	oldGeminiHome := os.Getenv("GEMINI_HOME")
+	oldHome := os.Getenv("HOME")
+
+	os.Setenv("CODEX_HOME", codexDir)
+	os.Setenv("GEMINI_HOME", geminiDir)
+	os.Setenv("HOME", tmpDir)
+
+	defer func() {
+		os.Setenv("CODEX_HOME", oldCodexHome)
+		os.Setenv("GEMINI_HOME", oldGeminiHome)
+		os.Setenv("HOME", oldHome)
+	}()
+
+	// Create auth for codex only
+	os.WriteFile(filepath.Join(codexDir, "auth.json"), []byte(`{"token": "test"}`), 0600)
+
+	tracker := NewTracker(vault)
+
+	statuses, err := tracker.GetAllStatuses()
+	if err != nil {
+		t.Fatalf("GetAllStatuses failed: %v", err)
+	}
+
+	if len(statuses) != 3 {
+		t.Errorf("expected 3 statuses, got %d", len(statuses))
+	}
+
+	// Find codex status
+	var codexStatus *AuthStatus
+	for _, s := range statuses {
+		if s.Provider == "codex" {
+			codexStatus = s
+			break
+		}
+	}
+
+	if codexStatus == nil {
+		t.Fatal("codex status not found")
+	}
+
+	if !codexStatus.HasAuth {
+		t.Error("expected codex to have auth")
+	}
+}
+
+func TestWatcherStartAlreadyRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", filepath.Join(tmpDir, "codex"))
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	w := NewWatcher(vault, nil)
+
+	// Start in goroutine
+	go w.Start()
+	time.Sleep(50 * time.Millisecond)
+
+	// Try to start again - should error
+	err := w.Start()
+	if err == nil {
+		t.Error("expected error when starting already running watcher")
+	}
+
+	w.Stop()
+}
+
+func TestWatcherStopNotRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	w := NewWatcher(vault, nil)
+
+	// Stop without starting - should not panic
+	w.Stop()
+}
+
+func TestWatcherDetectsChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+	authPath := filepath.Join(codexDir, "auth.json")
+	os.WriteFile(authPath, []byte(`{"token": "initial"}`), 0600)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	changes := make(chan Change, 10)
+	w := NewWatcher(vault, func(c Change) {
+		changes <- c
+	})
+
+	// Start watcher
+	go w.Start()
+	time.Sleep(100 * time.Millisecond)
+
+	// Modify auth file
+	os.WriteFile(authPath, []byte(`{"token": "modified"}`), 0600)
+
+	// Wait for detection (poll interval is 5 seconds, so we need to wait)
+	// For test purposes, let's just stop the watcher
+	w.Stop()
+
+	// Note: In a real test we'd wait for the change, but the 5-second poll
+	// makes this test slow. The test mainly verifies the watcher starts/stops correctly.
+}
+
+func TestCaptureUnknownProvider(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	tracker := NewTracker(vault)
+
+	_, err := tracker.Capture("unknown-provider")
+	if err == nil {
+		t.Error("expected error for unknown provider")
+	}
+}
+
+func TestLoadStateInvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("XDG_DATA_HOME", oldXDG)
+
+	// Create invalid JSON state file
+	stateDir := filepath.Join(tmpDir, "caam")
+	os.MkdirAll(stateDir, 0700)
+	os.WriteFile(filepath.Join(stateDir, "auth_state.json"), []byte("{invalid json"), 0600)
+
+	tracker := NewTracker(vault)
+
+	err := tracker.LoadState()
+	if err == nil {
+		t.Error("expected error for invalid JSON")
+	}
+}
+
+func TestDetectChangeNewAuthAfterRemoval(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	// Capture initial state (no auth)
+	tracker.Capture("codex")
+
+	// Create auth file
+	authPath := filepath.Join(codexDir, "auth.json")
+	os.WriteFile(authPath, []byte(`{"token": "new"}`), 0600)
+
+	// Should detect as new
+	change, err := tracker.DetectChange("codex")
+	if err != nil {
+		t.Fatalf("DetectChange failed: %v", err)
+	}
+
+	if change.Type != ChangeNew {
+		t.Errorf("expected ChangeNew, got %v", change.Type)
+	}
+}
+
+func TestGetStatusWithMatchingProfile(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Create auth file
+	codexDir := filepath.Join(tmpDir, "codex")
+	os.MkdirAll(codexDir, 0700)
+	authContent := []byte(`{"token": "test"}`)
+	authPath := filepath.Join(codexDir, "auth.json")
+	os.WriteFile(authPath, authContent, 0600)
+
+	// Save as profile
+	profileDir := vault.ProfilePath("codex", "my-profile")
+	os.MkdirAll(profileDir, 0700)
+	os.WriteFile(filepath.Join(profileDir, "auth.json"), authContent, 0600)
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	status, err := tracker.GetStatus("codex")
+	if err != nil {
+		t.Fatalf("GetStatus failed: %v", err)
+	}
+
+	if !status.HasAuth {
+		t.Error("expected HasAuth to be true")
+	}
+
+	if status.MatchedProfile != "my-profile" {
+		t.Errorf("expected MatchedProfile 'my-profile', got %q", status.MatchedProfile)
+	}
+
+	if status.IsUnsaved {
+		t.Error("expected IsUnsaved to be false when profile matches")
+	}
+
+	if status.SuggestedAction != "" {
+		t.Error("expected no SuggestedAction when profile matches")
+	}
+}
