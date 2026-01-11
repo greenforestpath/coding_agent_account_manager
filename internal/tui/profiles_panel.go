@@ -235,7 +235,21 @@ func (p *ProfilesPanel) View() string {
 		return p.styles.Border.Render(inner)
 	}
 
-	// Define column widths
+	availableWidth := p.width
+	if availableWidth > 0 {
+		availableWidth = availableWidth - 4
+	}
+
+	layout := "full"
+	if availableWidth > 0 {
+		switch {
+		case availableWidth < 56:
+			layout = "narrow"
+		case availableWidth < 80:
+			layout = "compact"
+		}
+	}
+
 	colWidths := struct {
 		name     int
 		auth     int
@@ -243,20 +257,66 @@ func (p *ProfilesPanel) View() string {
 		lastUsed int
 		account  int
 	}{
-		name:     16,
+		name:     18,
 		auth:     8,
-		status:   14, // Increased from 10
+		status:   14,
 		lastUsed: 12,
 		account:  16,
 	}
 
+	switch layout {
+	case "compact":
+		colWidths.name = 22
+		colWidths.status = 14
+		colWidths.lastUsed = 12
+		colWidths.auth = 0
+		colWidths.account = 0
+	case "narrow":
+		colWidths.name = 26
+		colWidths.status = 12
+		colWidths.lastUsed = 0
+		colWidths.auth = 0
+		colWidths.account = 0
+	}
+
+	columnCount := 2
+	if layout == "full" {
+		columnCount = 5
+	} else if layout == "compact" {
+		columnCount = 3
+	}
+
+	sumWidths := colWidths.name + colWidths.status
+	if layout == "full" {
+		sumWidths += colWidths.auth + colWidths.lastUsed + colWidths.account
+	} else if layout == "compact" {
+		sumWidths += colWidths.lastUsed
+	}
+	sumWidths += columnCount - 1
+	if availableWidth > 0 && sumWidths > availableWidth {
+		reduce := sumWidths - availableWidth
+		minName := 12
+		if layout == "full" {
+			minName = 10
+		}
+		if colWidths.name-reduce < minName {
+			colWidths.name = minName
+		} else {
+			colWidths.name -= reduce
+		}
+	}
+
 	// Header row
-	headerCells := []string{
-		padRight("Name", colWidths.name),
-		padRight("Auth", colWidths.auth),
-		padRight("Status", colWidths.status),
-		padRight("Last Used", colWidths.lastUsed),
-		padRight("Account", colWidths.account),
+	headerCells := []string{padRight("Name", colWidths.name)}
+	if layout == "full" {
+		headerCells = append(headerCells, padRight("Auth", colWidths.auth))
+	}
+	headerCells = append(headerCells, padRight("Status", colWidths.status))
+	if layout != "narrow" {
+		headerCells = append(headerCells, padRight("Last Used", colWidths.lastUsed))
+	}
+	if layout == "full" {
+		headerCells = append(headerCells, padRight("Account", colWidths.account))
 	}
 	header := p.styles.Header.Render(strings.Join(headerCells, " "))
 
@@ -271,12 +331,10 @@ func (p *ProfilesPanel) View() string {
 
 		// Status display
 		statusText := formatTUIStatus(&prof)
-		statusStyle := p.styles.StatusStyle(prof.HealthStatus)
-		statusStr := statusStyle.Render(statusText)
-
-		if prof.Locked {
-			statusStr += " " + p.styles.LockIcon.Render("🔒")
+		if prof.Locked && layout == "full" {
+			statusText += " " + p.styles.LockIcon.Render("🔒")
 		}
+		statusStyle := p.styles.StatusStyle(prof.HealthStatus)
 
 		// Last used - relative time
 		lastUsed := formatRelativeTime(prof.LastUsed)
@@ -286,30 +344,31 @@ func (p *ProfilesPanel) View() string {
 		if account == "" {
 			account = "-"
 		}
-		if len(account) > colWidths.account {
+		if len(account) > colWidths.account && colWidths.account > 3 {
 			account = account[:colWidths.account-3] + "..."
+		} else if len(account) > colWidths.account {
+			account = account[:colWidths.account]
 		}
 
 		// Build row cells with proper padding
 		paddedName := padRight(formatNameWithBadge(prof.Name, prof.Badge, colWidths.name-2), colWidths.name-2)
-		paddedAuth := padRight(prof.AuthMode, colWidths.auth)
-
-		// Status padding
-		// statusText has the emoji and text.
 		paddedStatusText := padRight(statusText, colWidths.status)
 		renderedStatus := statusStyle.Render(paddedStatusText)
 
-		paddedLastUsed := padRight(lastUsed, colWidths.lastUsed)
-		paddedAccount := padRight(account, colWidths.account)
+		rowParts := []string{indicator + paddedName}
+		if layout == "full" {
+			rowParts = append(rowParts, padRight(prof.AuthMode, colWidths.auth))
+		}
+		rowParts = append(rowParts, renderedStatus)
+		if layout != "narrow" {
+			rowParts = append(rowParts, padRight(lastUsed, colWidths.lastUsed))
+		}
+		if layout == "full" {
+			rowParts = append(rowParts, padRight(account, colWidths.account))
+		}
 
-		rowStr := fmt.Sprintf("%s %s %s %s %s",
-			indicator+paddedName,
-			paddedAuth,
-			renderedStatus,
-			paddedLastUsed,
-			paddedAccount,
-		)
-		if prof.ProjectDefault {
+		rowStr := strings.Join(rowParts, " ")
+		if prof.ProjectDefault && layout == "full" {
 			rowStr += " " + p.styles.ProjectBadge.Render("[PROJECT DEFAULT]")
 		}
 
