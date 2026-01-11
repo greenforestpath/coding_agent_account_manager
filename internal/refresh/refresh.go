@@ -62,8 +62,13 @@ func RefreshProfile(ctx context.Context, provider, profile string, vault *authfi
 
 	// If the profile was active, restore the updated files to the active location
 	if isActive {
-		if restoreErr := vault.Restore(fileSet, profile); restoreErr != nil {
-			return fmt.Errorf("refresh successful but failed to update active files: %w", restoreErr)
+		// Re-verify the profile is still active before restoring.
+		// This prevents a race condition where the user switches profiles (via CLI)
+		// while the daemon is performing a refresh.
+		if currentActive, err := vault.ActiveProfile(fileSet); err == nil && currentActive == profile {
+			if restoreErr := vault.Restore(fileSet, profile); restoreErr != nil {
+				return fmt.Errorf("refresh successful but failed to update active files: %w", restoreErr)
+			}
 		}
 	}
 
