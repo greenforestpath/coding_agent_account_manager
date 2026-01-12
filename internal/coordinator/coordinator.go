@@ -123,9 +123,16 @@ func (c *Coordinator) Stop() error {
 		c.mu.Unlock()
 		return nil
 	}
+	c.running = false
 	c.mu.Unlock()
 
-	close(c.stopCh)
+	// Close stopCh only once (safe since we checked running flag under lock)
+	select {
+	case <-c.stopCh:
+		// Already closed
+	default:
+		close(c.stopCh)
+	}
 	<-c.doneCh
 	return nil
 }

@@ -179,9 +179,16 @@ func (a *MultiAgent) Stop(ctx context.Context) error {
 		a.mu.Unlock()
 		return nil
 	}
+	a.running = false
 	a.mu.Unlock()
 
-	close(a.stopCh)
+	// Close stopCh only once (safe since we checked running flag under lock)
+	select {
+	case <-a.stopCh:
+		// Already closed
+	default:
+		close(a.stopCh)
+	}
 
 	if a.server != nil {
 		if err := a.server.Shutdown(ctx); err != nil {

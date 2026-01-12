@@ -57,6 +57,9 @@ func (d *Deployer) Connect() error {
 	// We need to access it through the SFTP-enabled client
 	// For now, we'll create a separate connection for commands
 	d.client = d.getSSHClient()
+	if d.client == nil {
+		return fmt.Errorf("failed to establish command connection")
+	}
 
 	return nil
 }
@@ -235,21 +238,21 @@ func (d *Deployer) NeedsUpdate(ctx context.Context) (bool, string, string, error
 }
 
 // UploadBinary uploads the caam binary to the remote machine.
-func (d *Deployer) UploadBinary(ctx context.Context) error {
+// Returns the path where the binary was installed.
+func (d *Deployer) UploadBinary(ctx context.Context) (string, error) {
 	binary, err := d.findLocalBinary()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	d.logger.Info("uploading caam binary",
 		"source", binary,
-		"destination", "/usr/local/bin/caam",
 		"machine", d.machine.Name)
 
 	// Read local binary
 	data, err := os.ReadFile(binary)
 	if err != nil {
-		return fmt.Errorf("failed to read local binary: %w", err)
+		return "", fmt.Errorf("failed to read local binary: %w", err)
 	}
 
 	// Upload to temp location first (we might not have permissions for /usr/local/bin)
@@ -263,22 +266,60 @@ func (d *Deployer) UploadBinary(ctx context.Context) error {
 
 	// Write via SFTP
 	if err := d.sshClient.WriteFile(tempPath, data, 0755); err != nil {
-		return fmt.Errorf("failed to upload binary: %w", err)
+		return "", fmt.Errorf("failed to upload binary: %w", err)
 	}
 
 	// Move to final location with sudo if needed
+	installPath := "/usr/local/bin/caam"
 	_, err = d.RunCommand(ctx, fmt.Sprintf("sudo mv %s /usr/local/bin/caam && sudo chmod 755 /usr/local/bin/caam", tempPath))
 	if err != nil {
-		// Try without sudo
-		_, err = d.RunCommand(ctx, fmt.Sprintf("mv %s /usr/local/bin/caam 2>/dev/null || mkdir -p $HOME/bin && mv %s $HOME/bin/caam", tempPath, tempPath))
+		// Try without sudo - install to ~/bin
+		installPath = home + "/bin/caam"
+		_, err = d.RunCommand(ctx, fmt.Sprintf("mkdir -p %s/bin && mv %s %s/bin/caam && chmod 755 %s/bin/caam", home, tempPath, home, home))
 		if err != nil {
-			return fmt.Errorf("failed to install binary: %w", err)
+			return "", fmt.Errorf("failed to install binary: %w", err)
 		}
 		d.logger.Info("installed caam to ~/bin/caam (no sudo access)")
 	}
 
-	d.logger.Info("binary uploaded successfully", "machine", d.machine.Name)
-	return nil
+	d.logger.Info("binary uploaded successfully", "machine", d.machine.Name, "path", installPath)
+	return installPath, nil
+}
+
+// findBinaryPath locates the existing caam binary on the remote machine.
+func (d *Deployer) findBinaryPath(ctx context.Context) string {
+	// Check common locations in order of preference
+	locations := []string{
+		"/usr/local/bin/caam",
+		"/usr/bin/caam",
+	}
+
+	// Also check ~/bin/caam
+	if home, err := d.RunCommand(ctx, "echo $HOME"); err == nil {
+		home = strings.TrimSpace(home)
+		if home != "" {
+			locations = append(locations, home+"/bin/caam")
+		}
+	}
+
+	for _, loc := range locations {
+		if output, err := d.RunCommand(ctx, "test -x "+loc+" && echo yes"); err == nil {
+			if strings.TrimSpace(output) == "yes" {
+				return loc
+			}
+		}
+	}
+
+	// Fallback to which command
+	if output, err := d.RunCommand(ctx, "which caam"); err == nil {
+		path := strings.TrimSpace(output)
+		if path != "" {
+			return path
+		}
+	}
+
+	// Default to /usr/local/bin/caam if nothing found (shouldn't happen if NeedsUpdate returned false)
+	return "/usr/local/bin/caam"
 }
 
 // DeployConfig represents the generated configuration for a machine.
@@ -519,13 +560,21 @@ func (d *Deployer) DeployCoordinator(ctx context.Context, config CoordinatorConf
 		return result, err
 	}
 
+	// Determine binary install path
+	var installPath string
+
 	// Upload binary if needed
 	if needsUpdate {
-		if err := d.UploadBinary(ctx); err != nil {
+		var err error
+		installPath, err = d.UploadBinary(ctx)
+		if err != nil {
 			result.Error = fmt.Errorf("binary upload failed: %w", err)
 			return result, result.Error
 		}
 		result.BinaryUpdated = true
+	} else {
+		// Binary already exists - find where it is
+		installPath = d.findBinaryPath(ctx)
 	}
 
 	// Write coordinator config
@@ -538,7 +587,7 @@ func (d *Deployer) DeployCoordinator(ctx context.Context, config CoordinatorConf
 	// Write systemd unit
 	unitConfig := SystemdUnitConfig{
 		Type:      "Auth Recovery Coordinator",
-		ExecStart: "/usr/local/bin/caam auth-coordinator --config ~/.config/caam/coordinator.json",
+		ExecStart: installPath + " auth-coordinator --config ~/.config/caam/coordinator.json",
 	}
 	if err := d.WriteSystemdUnit(ctx, "caam-coordinator", unitConfig); err != nil {
 		result.Error = fmt.Errorf("systemd unit write failed: %w", err)
