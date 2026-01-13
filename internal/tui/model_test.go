@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -374,18 +375,18 @@ func TestInitWithFileWatching(t *testing.T) {
 // TestRestoreSelection tests the restoreSelection method.
 func TestRestoreSelection(t *testing.T) {
 	tests := []struct {
-		name           string
-		profiles       []Profile
-		ctx            refreshContext
-		initialSelect  int
-		expectedSelect int
+		name          string
+		profiles      []Profile
+		ctx           refreshContext
+		initialSelect int
+		expectedName  string
 	}{
 		{
-			name:           "empty profiles",
-			profiles:       []Profile{},
-			ctx:            refreshContext{},
-			initialSelect:  5,
-			expectedSelect: 0,
+			name:          "empty profiles",
+			profiles:      []Profile{},
+			ctx:           refreshContext{},
+			initialSelect: 5,
+			expectedName:  "",
 		},
 		{
 			name: "restore by profile name",
@@ -394,9 +395,9 @@ func TestRestoreSelection(t *testing.T) {
 				{Name: "beta"},
 				{Name: "gamma"},
 			},
-			ctx:            refreshContext{selectedProfile: "beta"},
-			initialSelect:  0,
-			expectedSelect: 1,
+			ctx:           refreshContext{selectedProfile: "beta"},
+			initialSelect: 0,
+			expectedName:  "beta",
 		},
 		{
 			name: "deleted profile - select next",
@@ -404,9 +405,9 @@ func TestRestoreSelection(t *testing.T) {
 				{Name: "alpha"},
 				{Name: "gamma"},
 			},
-			ctx:            refreshContext{deletedProfile: "beta"},
-			initialSelect:  0,
-			expectedSelect: 0, // alpha takes beta's place
+			ctx:           refreshContext{deletedProfile: "beta"},
+			initialSelect: 0,
+			expectedName:  "alpha", // alpha takes beta's place
 		},
 		{
 			name: "deleted profile - select previous when deleted is last",
@@ -414,27 +415,27 @@ func TestRestoreSelection(t *testing.T) {
 				{Name: "alpha"},
 				{Name: "beta"},
 			},
-			ctx:            refreshContext{deletedProfile: "zeta"},
-			initialSelect:  0,
-			expectedSelect: 1, // last profile
+			ctx:           refreshContext{deletedProfile: "zeta"},
+			initialSelect: 0,
+			expectedName:  "beta", // last profile
 		},
 		{
 			name: "clamp selection to valid range",
 			profiles: []Profile{
 				{Name: "only"},
 			},
-			ctx:            refreshContext{},
-			initialSelect:  10,
-			expectedSelect: 0,
+			ctx:           refreshContext{},
+			initialSelect: 10,
+			expectedName:  "only",
 		},
 		{
 			name: "negative selection clamped to 0",
 			profiles: []Profile{
 				{Name: "only"},
 			},
-			ctx:            refreshContext{},
-			initialSelect:  -5,
-			expectedSelect: 0,
+			ctx:           refreshContext{},
+			initialSelect: -5,
+			expectedName:  "only",
 		},
 	}
 
@@ -448,8 +449,8 @@ func TestRestoreSelection(t *testing.T) {
 
 			m.restoreSelection(tc.ctx)
 
-			if m.selected != tc.expectedSelect {
-				t.Errorf("expected selected=%d, got %d", tc.expectedSelect, m.selected)
+			if m.selectedProfileName != tc.expectedName {
+				t.Errorf("expected selectedProfileName=%q, got %q", tc.expectedName, m.selectedProfileName)
 			}
 		})
 	}
@@ -708,13 +709,13 @@ func TestIsCompactLayout(t *testing.T) {
 		width, height int
 		expected      bool
 	}{
-		{0, 0, false},     // Zero dimensions
-		{50, 30, true},    // Narrow width
-		{150, 20, true},   // Short height
-		{150, 40, false},  // Full size
-		{99, 30, true},    // Just under width threshold
-		{100, 27, true},   // Just under height threshold
-		{100, 28, false},  // Exactly at thresholds
+		{0, 0, false},    // Zero dimensions
+		{50, 30, true},   // Narrow width
+		{150, 20, true},  // Short height
+		{150, 40, false}, // Full size
+		{99, 30, true},   // Just under width threshold
+		{100, 27, true},  // Just under height threshold
+		{100, 28, false}, // Exactly at thresholds
 	}
 
 	for _, tc := range tests {
@@ -1176,13 +1177,23 @@ func TestHandleEditProfile(t *testing.T) {
 	m.profiles = map[string][]Profile{
 		"claude": {{Name: "test@example.com"}},
 	}
+	m.profileMeta = map[string]map[string]*profile.Profile{
+		"claude": {
+			"test@example.com": {
+				Name:     "test@example.com",
+				Provider: "claude",
+			},
+		},
+	}
 
 	result, _ := m.handleEditProfile()
 	updated := result.(Model)
 
-	// Should show "not yet implemented" message
-	if !strings.Contains(updated.statusMsg, "not yet implemented") {
-		t.Errorf("expected 'not yet implemented' message, got %q", updated.statusMsg)
+	if updated.state != stateEditProfile {
+		t.Errorf("expected stateEditProfile, got %v", updated.state)
+	}
+	if updated.editDialog == nil {
+		t.Error("expected editDialog to be initialized")
 	}
 }
 

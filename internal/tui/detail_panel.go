@@ -261,7 +261,7 @@ func (p *DetailPanel) View() string {
 		key  string
 		desc string
 	}{
-		{"Enter", fmt.Sprintf("Run %s", prof.Provider)},
+		{"Enter", "Activate profile"},
 		{"l", "Login/refresh"},
 		{"e", "Edit profile"},
 		{"o", "Open in browser"},

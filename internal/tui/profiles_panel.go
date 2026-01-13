@@ -125,7 +125,7 @@ func formatTUIStatus(pi *ProfileInfo) string {
 	icon := pi.HealthStatus.Icon()
 
 	if pi.TokenExpiry.IsZero() {
-		return icon + " Unknown"
+		return icon + " " + formatStatusLabel(pi.HealthStatus)
 	}
 
 	ttl := time.Until(pi.TokenExpiry)
@@ -134,6 +134,14 @@ func formatTUIStatus(pi *ProfileInfo) string {
 	}
 
 	return icon + " " + formatDuration(ttl)
+}
+
+func formatStatusLabel(status health.HealthStatus) string {
+	label := status.String()
+	if label == "" {
+		return "Unknown"
+	}
+	return strings.ToUpper(label[:1]) + label[1:]
 }
 
 // formatDuration formats a duration concisely for TUI.
@@ -184,6 +192,23 @@ func (p *ProfilesPanel) SetSelected(index int) {
 	if index >= 0 && index < len(p.profiles) {
 		p.selected = index
 	}
+}
+
+// SetSelectedByName sets the selected profile by name.
+// Returns true if the profile was found.
+func (p *ProfilesPanel) SetSelectedByName(name string) bool {
+	for i := range p.profiles {
+		if p.profiles[i].Name == name {
+			p.selected = i
+			return true
+		}
+	}
+	return false
+}
+
+// Count returns the number of profiles in the panel.
+func (p *ProfilesPanel) Count() int {
+	return len(p.profiles)
 }
 
 // GetSelected returns the currently selected profile index.

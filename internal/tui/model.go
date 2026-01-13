@@ -3,8 +3,10 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,9 +16,12 @@ import (
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
 	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/identity"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/refresh"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/signals"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/sync"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/watcher"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,6 +49,9 @@ const (
 	stateExportConfirm
 	stateImportPath
 	stateImportConfirm
+	stateEditProfile
+	stateSyncAdd
+	stateSyncEdit
 )
 
 // confirmAction represents the action being confirmed.
@@ -62,6 +70,11 @@ type Profile struct {
 	IsActive bool
 }
 
+type vaultProfileMeta struct {
+	Description string
+	Account     string
+}
+
 // Model is the main Bubble Tea model for the caam TUI.
 type Model struct {
 	// Provider state
@@ -69,8 +82,12 @@ type Model struct {
 	activeProvider int      // Currently selected provider index
 
 	// Profile state
-	profiles map[string][]Profile // Profiles by provider
-	selected int                  // Currently selected profile index
+	profiles            map[string][]Profile // Profiles by provider
+	selected            int                  // Currently selected profile index
+	selectedProfileName string               // Selected profile name (source of truth for actions)
+	profileStore        *profile.Store
+	profileMeta         map[string]map[string]*profile.Profile
+	vaultMeta           map[string]map[string]vaultProfileMeta
 
 	// View state
 	width  int
@@ -117,6 +134,14 @@ type Model struct {
 	backupDialog   *TextInputDialog
 	confirmDialog  *ConfirmDialog
 	pendingProfile string // Profile name pending overwrite confirmation
+	editDialog     *MultiFieldDialog
+
+	// Sync panel dialogs
+	syncAddDialog       *MultiFieldDialog
+	syncEditDialog      *MultiFieldDialog
+	pendingSyncMachine  string
+	pendingEditProvider string
+	pendingEditProfile  string
 }
 
 // DefaultProviders returns the default list of provider names.
@@ -154,6 +179,9 @@ func NewWithProviders(providers []string) Model {
 		badges:         make(map[string]profileBadge),
 		runtime:        defaultRuntime,
 		cwd:            cwd,
+		profileStore:   profile.NewStore(profile.DefaultStorePath()),
+		profileMeta:    make(map[string]map[string]*profile.Profile),
+		vaultMeta:      make(map[string]map[string]vaultProfileMeta),
 		projectStore:   project.NewStore(""),
 		healthStorage:  health.NewStorage(""),
 	}
@@ -313,6 +341,13 @@ func formatSQLiteSince(t time.Time) string {
 func (m Model) loadProfiles() tea.Msg {
 	vault := authfile.NewVault(m.vaultPath)
 	profiles := make(map[string][]Profile)
+	meta := make(map[string]map[string]*profile.Profile)
+	vaultMeta := make(map[string]map[string]vaultProfileMeta)
+
+	store := m.profileStore
+	if store == nil {
+		store = profile.NewStore(profile.DefaultStorePath())
+	}
 
 	for _, name := range m.providers {
 		names, err := vault.List(name)
@@ -331,17 +366,25 @@ func (m Model) loadProfiles() tea.Msg {
 
 		sort.Strings(names)
 		ps := make([]Profile, 0, len(names))
+		meta[name] = make(map[string]*profile.Profile)
+		vaultMeta[name] = make(map[string]vaultProfileMeta)
 		for _, prof := range names {
 			ps = append(ps, Profile{
 				Name:     prof,
 				Provider: name,
 				IsActive: prof == active,
 			})
+			if store != nil {
+				if loaded, err := store.Load(name, prof); err == nil && loaded != nil {
+					meta[name][prof] = loaded
+				}
+			}
+			vaultMeta[name][prof] = loadVaultProfileMeta(vault, name, prof)
 		}
 		profiles[name] = ps
 	}
 
-	return profilesLoadedMsg{profiles: profiles}
+	return profilesLoadedMsg{profiles: profiles, meta: meta, vaultMeta: vaultMeta}
 }
 
 func authFileSetForProvider(provider string) (authfile.AuthFileSet, bool) {
@@ -359,7 +402,9 @@ func authFileSetForProvider(provider string) (authfile.AuthFileSet, bool) {
 
 // profilesLoadedMsg is sent when profiles are loaded.
 type profilesLoadedMsg struct {
-	profiles map[string][]Profile
+	profiles  map[string][]Profile
+	meta      map[string]map[string]*profile.Profile
+	vaultMeta map[string]map[string]vaultProfileMeta
 }
 
 // errMsg is sent when an error occurs.
@@ -506,6 +551,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadSyncState()
 
+	case syncMachineUpdatedMsg:
+		if msg.err != nil {
+			m.statusMsg = "Failed to update machine: " + msg.err.Error()
+		} else if msg.machine != nil {
+			m.statusMsg = "Machine updated: " + msg.machine.Name
+		} else {
+			m.statusMsg = "Machine updated"
+		}
+		return m, m.loadSyncState()
+
 	case syncMachineRemovedMsg:
 		if msg.err != nil {
 			m.statusMsg = "Failed to remove machine: " + msg.err.Error()
@@ -524,6 +579,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case syncStartedMsg:
+		if m.syncPanel != nil {
+			m.syncPanel.SetSyncing(true)
+		}
+		if msg.machineName != "" {
+			m.statusMsg = "Syncing " + msg.machineName + "..."
+		} else {
+			m.statusMsg = "Syncing..."
+		}
+		return m, nil
+
+	case syncCompletedMsg:
+		if m.syncPanel != nil {
+			m.syncPanel.SetSyncing(false)
+		}
+		if msg.err != nil {
+			m.statusMsg = "Sync failed: " + msg.err.Error()
+		} else {
+			name := msg.machineName
+			if name == "" {
+				name = "machine"
+			}
+			stats := msg.stats
+			m.statusMsg = fmt.Sprintf(
+				"Sync complete (%s): %d pushed, %d pulled, %d skipped, %d failed",
+				name,
+				stats.Pushed,
+				stats.Pulled,
+				stats.Skipped,
+				stats.Failed,
+			)
+		}
+		return m, m.loadSyncState()
+
 	case tea.KeyMsg:
 		return m.handleKeyPress(msg)
 
@@ -534,6 +623,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case profilesLoadedMsg:
 		m.profiles = msg.profiles
+		if msg.meta != nil {
+			m.profileMeta = msg.meta
+		} else {
+			m.profileMeta = make(map[string]map[string]*profile.Profile)
+		}
+		if msg.vaultMeta != nil {
+			m.vaultMeta = msg.vaultMeta
+		} else {
+			m.vaultMeta = make(map[string]map[string]vaultProfileMeta)
+		}
 		// Update provider panel counts
 		if m.providerPanel != nil {
 			counts := make(map[string]int)
@@ -552,6 +651,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.profiles = msg.profiles
+		if msg.meta != nil {
+			m.profileMeta = msg.meta
+		}
+		if msg.vaultMeta != nil {
+			m.vaultMeta = msg.vaultMeta
+		}
 		// Restore selection intelligently based on context
 		m.restoreSelection(msg.ctx)
 		// Update provider panel counts
@@ -675,6 +780,12 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleImportPathKeys(msg)
 	case stateImportConfirm:
 		return m.handleImportConfirmKeys(msg)
+	case stateEditProfile:
+		return m.handleEditProfileKeys(msg)
+	case stateSyncAdd:
+		return m.handleSyncAddKeys(msg)
+	case stateSyncEdit:
+		return m.handleSyncEditKeys(msg)
 	}
 
 	// Normal list view key handling
@@ -691,20 +802,34 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.Up):
-		if m.selected > 0 {
+		if m.profilesPanel != nil {
+			m.profilesPanel.MoveUp()
+			m.selected = m.profilesPanel.GetSelected()
+			if info := m.profilesPanel.GetSelectedProfile(); info != nil {
+				m.selectedProfileName = info.Name
+			}
+		} else if m.selected > 0 {
 			m.selected--
-			if m.profilesPanel != nil {
-				m.profilesPanel.SetSelected(m.selected)
+			if name := m.selectedProfileNameValue(); name != "" {
+				m.selectedProfileName = name
 			}
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Down):
-		profiles := m.currentProfiles()
-		if m.selected < len(profiles)-1 {
-			m.selected++
-			if m.profilesPanel != nil {
-				m.profilesPanel.SetSelected(m.selected)
+		if m.profilesPanel != nil {
+			m.profilesPanel.MoveDown()
+			m.selected = m.profilesPanel.GetSelected()
+			if info := m.profilesPanel.GetSelectedProfile(); info != nil {
+				m.selectedProfileName = info.Name
+			}
+		} else {
+			profiles := m.currentProfiles()
+			if m.selected < len(profiles)-1 {
+				m.selected++
+				if name := m.selectedProfileNameValue(); name != "" {
+					m.selectedProfileName = name
+				}
 			}
 		}
 		return m, nil
@@ -713,6 +838,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeProvider > 0 {
 			m.activeProvider--
 			m.selected = 0
+			m.selectedProfileName = ""
 			m.syncProfilesPanel()
 		}
 		return m, nil
@@ -721,6 +847,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.activeProvider < len(m.providers)-1 {
 			m.activeProvider++
 			m.selected = 0
+			m.selectedProfileName = ""
 			m.syncProfilesPanel()
 		}
 		return m, nil
@@ -732,6 +859,7 @@ func (m Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Cycle through providers
 		m.activeProvider = (m.activeProvider + 1) % len(m.providers)
 		m.selected = 0
+		m.selectedProfileName = ""
 		m.syncProfilesPanel()
 		return m, nil
 
@@ -855,22 +983,20 @@ func (m *Model) applySearchFilter() {
 	query := strings.ToLower(m.searchQuery)
 
 	for _, p := range profiles {
-		if query == "" || strings.Contains(strings.ToLower(p.Name), query) {
-			filtered = append(filtered, ProfileInfo{
-				Name:           p.Name,
-				Badge:          m.badgeFor(provider, p.Name),
-				ProjectDefault: projectDefault != "" && p.Name == projectDefault,
-				AuthMode:       "oauth",
-				LoggedIn:       true,
-				Locked:         false,
-				IsActive:       p.IsActive,
-			})
+		info := m.buildProfileInfo(provider, p, projectDefault)
+		if profileMatchesQuery(info, query) {
+			filtered = append(filtered, info)
 		}
 	}
 
 	m.profilesPanel.SetProfiles(filtered)
 	m.selected = 0
 	m.profilesPanel.SetSelected(0)
+	if info := m.profilesPanel.GetSelectedProfile(); info != nil {
+		m.selectedProfileName = info.Name
+	} else {
+		m.selectedProfileName = ""
+	}
 	m.statusMsg = fmt.Sprintf("/%s (%d matches)", m.searchQuery, len(filtered))
 }
 
@@ -878,37 +1004,35 @@ func (m *Model) applySearchFilter() {
 // Confirmation is required because activation replaces current auth files,
 // which could be lost if not backed up.
 func (m Model) handleActivateProfile() (tea.Model, tea.Cmd) {
-	profiles := m.currentProfiles()
-	if m.selected < 0 || m.selected >= len(profiles) {
+	info := m.selectedProfileInfo()
+	if info == nil {
 		m.statusMsg = "No profile selected"
 		return m, nil
 	}
-	profile := profiles[m.selected]
 
 	// Check if this profile is already active (no-op)
-	if profile.IsActive {
-		m.statusMsg = fmt.Sprintf("'%s' is already active", profile.Name)
+	if info.IsActive {
+		m.statusMsg = fmt.Sprintf("'%s' is already active", info.Name)
 		return m, nil
 	}
 
 	// Enter confirmation state
 	m.state = stateConfirm
 	m.pendingAction = confirmActivate
-	m.statusMsg = fmt.Sprintf("Activate '%s'? Current auth will be replaced. (y/n)", profile.Name)
+	m.statusMsg = fmt.Sprintf("Activate '%s'? Current auth will be replaced. (y/n)", info.Name)
 	return m, nil
 }
 
 // handleDeleteProfile initiates profile deletion with confirmation.
 func (m Model) handleDeleteProfile() (tea.Model, tea.Cmd) {
-	profiles := m.currentProfiles()
-	if m.selected < 0 || m.selected >= len(profiles) {
+	info := m.selectedProfileInfo()
+	if info == nil {
 		m.statusMsg = "No profile selected"
 		return m, nil
 	}
-	profile := profiles[m.selected]
 	m.state = stateConfirm
 	m.pendingAction = confirmDelete
-	m.statusMsg = fmt.Sprintf("Delete '%s'? (y/n)", profile.Name)
+	m.statusMsg = fmt.Sprintf("Delete '%s'? (y/n)", info.Name)
 	return m, nil
 }
 
@@ -1096,8 +1220,9 @@ func (m Model) handleSyncPanelKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "a":
-		// Add machine - TODO: show dialog
-		m.statusMsg = "Add machine dialog not yet implemented"
+		m.syncAddDialog = newSyncMachineDialog("Add Sync Machine", nil)
+		m.state = stateSyncAdd
+		m.statusMsg = ""
 		return m, nil
 
 	case "r":
@@ -1107,8 +1232,12 @@ func (m Model) handleSyncPanelKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "e":
-		if m.syncPanel.SelectedMachine() != nil {
-			m.statusMsg = "Edit machine dialog not yet implemented"
+		if machine := m.syncPanel.SelectedMachine(); machine != nil {
+			m.pendingSyncMachine = machine.ID
+			m.syncEditDialog = newSyncMachineDialog("Edit Sync Machine", machine)
+			m.state = stateSyncEdit
+			m.statusMsg = ""
+			return m, nil
 		}
 		return m, nil
 
@@ -1120,13 +1249,15 @@ func (m Model) handleSyncPanelKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "s":
-		// Trigger sync operation (placeholder)
-		m.statusMsg = "Sync not yet implemented"
+		if machine := m.syncPanel.SelectedMachine(); machine != nil {
+			m.statusMsg = "Syncing " + machine.Name + "..."
+			m.syncPanel.SetSyncing(true)
+			return m, m.syncWithMachine(machine.ID)
+		}
 		return m, nil
 
 	case "l":
-		// Show sync log (placeholder)
-		m.statusMsg = "Sync log not yet implemented"
+		m.statusMsg = "View sync history via CLI: caam sync log"
 		return m, nil
 	}
 
@@ -1159,18 +1290,17 @@ func (m Model) executeBackup(profileName string) (tea.Model, tea.Cmd) {
 
 // handleLoginProfile initiates login/refresh for the selected profile.
 func (m Model) handleLoginProfile() (tea.Model, tea.Cmd) {
-	profiles := m.currentProfiles()
-	if m.selected < 0 || m.selected >= len(profiles) {
+	info := m.selectedProfileInfo()
+	if info == nil {
 		m.statusMsg = "No profile selected"
 		return m, nil
 	}
-	profile := profiles[m.selected]
 	provider := m.currentProvider()
 
-	m.statusMsg = fmt.Sprintf("Refreshing %s token...", profile.Name)
+	m.statusMsg = fmt.Sprintf("Refreshing %s token...", info.Name)
 
 	// Return a command that performs the async refresh
-	return m, m.doRefreshProfile(provider, profile.Name)
+	return m, m.doRefreshProfile(provider, info.Name)
 }
 
 // doRefreshProfile returns a tea.Cmd that performs the token refresh.
@@ -1244,14 +1374,211 @@ func (m Model) handleOpenInBrowser() (tea.Model, tea.Cmd) {
 
 // handleEditProfile opens the edit view for the selected profile.
 func (m Model) handleEditProfile() (tea.Model, tea.Cmd) {
-	profiles := m.currentProfiles()
-	if m.selected < 0 || m.selected >= len(profiles) {
+	info := m.selectedProfileInfo()
+	if info == nil {
 		m.statusMsg = "No profile selected"
 		return m, nil
 	}
-	profile := profiles[m.selected]
-	m.statusMsg = fmt.Sprintf("Edit '%s'... (not yet implemented)", profile.Name)
+	provider := m.currentProvider()
+
+	meta := m.profileMetaFor(provider, info.Name)
+	if meta == nil {
+		m.statusMsg = fmt.Sprintf("Profile metadata not found. Create with: caam profile add %s %s", provider, info.Name)
+		return m, nil
+	}
+
+	fields := []FieldDefinition{
+		{Label: "Description", Placeholder: "Notes about this profile", Value: meta.Description, Required: false},
+		{Label: "Account Label", Placeholder: "user@example.com", Value: meta.AccountLabel, Required: false},
+		{Label: "Browser Command", Placeholder: "chrome / firefox", Value: meta.BrowserCommand, Required: false},
+		{Label: "Browser Profile", Placeholder: "Profile 1", Value: meta.BrowserProfileDir, Required: false},
+		{Label: "Browser Name", Placeholder: "Work Chrome", Value: meta.BrowserProfileName, Required: false},
+	}
+
+	m.editDialog = NewMultiFieldDialog("Edit Profile", fields)
+	m.editDialog.SetWidth(64)
+	m.pendingEditProvider = provider
+	m.pendingEditProfile = info.Name
+	m.state = stateEditProfile
+	m.statusMsg = ""
 	return m, nil
+}
+
+func (m Model) handleEditProfileKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.editDialog == nil {
+		m.state = stateList
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.editDialog, cmd = m.editDialog.Update(msg)
+
+	switch m.editDialog.Result() {
+	case DialogResultSubmit:
+		provider := m.pendingEditProvider
+		name := m.pendingEditProfile
+		meta := m.profileMetaFor(provider, name)
+		if meta == nil {
+			m.editDialog = nil
+			m.state = stateList
+			m.pendingEditProvider = ""
+			m.pendingEditProfile = ""
+			m.statusMsg = "Profile metadata not found"
+			return m, nil
+		}
+
+		values := m.editDialog.ValueMap()
+		meta.Description = strings.TrimSpace(values["Description"])
+		meta.AccountLabel = strings.TrimSpace(values["Account Label"])
+		meta.BrowserCommand = strings.TrimSpace(values["Browser Command"])
+		meta.BrowserProfileDir = strings.TrimSpace(values["Browser Profile"])
+		meta.BrowserProfileName = strings.TrimSpace(values["Browser Name"])
+
+		if err := meta.Save(); err != nil {
+			m.editDialog = nil
+			m.state = stateList
+			m.statusMsg = fmt.Sprintf("Failed to save profile: %v", err)
+			return m, nil
+		}
+
+		m.editDialog = nil
+		m.state = stateList
+		m.pendingEditProvider = ""
+		m.pendingEditProfile = ""
+		m.statusMsg = "Profile updated"
+		m.syncProfilesPanel()
+		m.syncDetailPanel()
+		return m, nil
+
+	case DialogResultCancel:
+		m.editDialog = nil
+		m.state = stateList
+		m.pendingEditProvider = ""
+		m.pendingEditProfile = ""
+		m.statusMsg = "Edit cancelled"
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+type syncMachineDialogValues struct {
+	Name    string
+	Address string
+	Port    string
+	User    string
+	KeyPath string
+}
+
+func syncDialogValuesFromMachine(machine *sync.Machine) syncMachineDialogValues {
+	values := syncMachineDialogValues{}
+	if machine == nil {
+		return values
+	}
+	values.Name = machine.Name
+	values.Address = machine.Address
+	if machine.Port > 0 {
+		values.Port = fmt.Sprintf("%d", machine.Port)
+	}
+	values.User = machine.SSHUser
+	values.KeyPath = machine.SSHKeyPath
+	return values
+}
+
+func syncDialogValuesFromMap(values map[string]string) syncMachineDialogValues {
+	return syncMachineDialogValues{
+		Name:    strings.TrimSpace(values["Name"]),
+		Address: strings.TrimSpace(values["Address"]),
+		Port:    strings.TrimSpace(values["Port"]),
+		User:    strings.TrimSpace(values["User"]),
+		KeyPath: strings.TrimSpace(values["Key Path"]),
+	}
+}
+
+func newSyncMachineDialogWithValues(title string, values syncMachineDialogValues) *MultiFieldDialog {
+	fields := []FieldDefinition{
+		{Label: "Name", Placeholder: "work-laptop", Value: values.Name, Required: false},
+		{Label: "Address", Placeholder: "192.168.1.100", Value: values.Address, Required: false},
+		{Label: "Port", Placeholder: "22", Value: values.Port, Required: false},
+		{Label: "User", Placeholder: "ssh user (optional)", Value: values.User, Required: false},
+		{Label: "Key Path", Placeholder: "~/.ssh/id_rsa (optional)", Value: values.KeyPath, Required: false},
+	}
+	dialog := NewMultiFieldDialog(title, fields)
+	dialog.SetWidth(64)
+	return dialog
+}
+
+func newSyncMachineDialog(title string, machine *sync.Machine) *MultiFieldDialog {
+	return newSyncMachineDialogWithValues(title, syncDialogValuesFromMachine(machine))
+}
+
+func (m Model) handleSyncAddKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.syncAddDialog == nil {
+		m.state = stateList
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.syncAddDialog, cmd = m.syncAddDialog.Update(msg)
+
+	switch m.syncAddDialog.Result() {
+	case DialogResultSubmit:
+		values := syncDialogValuesFromMap(m.syncAddDialog.ValueMap())
+		if values.Name == "" || values.Address == "" {
+			m.statusMsg = "Name and address are required"
+			m.syncAddDialog = newSyncMachineDialogWithValues("Add Sync Machine", values)
+			m.state = stateSyncAdd
+			return m, nil
+		}
+		m.syncAddDialog = nil
+		m.state = stateList
+		m.statusMsg = "Adding machine..."
+		return m, m.addSyncMachine(values.Name, values.Address, values.Port, values.User, values.KeyPath)
+
+	case DialogResultCancel:
+		m.syncAddDialog = nil
+		m.state = stateList
+		m.statusMsg = "Add cancelled"
+		return m, nil
+	}
+
+	return m, cmd
+}
+
+func (m Model) handleSyncEditKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.syncEditDialog == nil {
+		m.state = stateList
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.syncEditDialog, cmd = m.syncEditDialog.Update(msg)
+
+	switch m.syncEditDialog.Result() {
+	case DialogResultSubmit:
+		values := syncDialogValuesFromMap(m.syncEditDialog.ValueMap())
+		if values.Name == "" || values.Address == "" {
+			m.statusMsg = "Name and address are required"
+			m.syncEditDialog = newSyncMachineDialogWithValues("Edit Sync Machine", values)
+			m.state = stateSyncEdit
+			return m, nil
+		}
+		machineID := m.pendingSyncMachine
+		m.syncEditDialog = nil
+		m.state = stateList
+		m.pendingSyncMachine = ""
+		m.statusMsg = "Updating machine..."
+		return m, m.updateSyncMachine(machineID, values.Name, values.Address, values.Port, values.User, values.KeyPath)
+
+	case DialogResultCancel:
+		m.syncEditDialog = nil
+		m.state = stateList
+		m.pendingSyncMachine = ""
+		m.statusMsg = "Edit cancelled"
+		return m, nil
+	}
+
+	return m, cmd
 }
 
 // handleEnterSearchMode enters search/filter mode.
@@ -1264,8 +1591,8 @@ func (m Model) handleEnterSearchMode() (tea.Model, tea.Cmd) {
 
 func (m Model) handleSetProjectAssociation() (tea.Model, tea.Cmd) {
 	provider := m.currentProvider()
-	profiles := m.currentProfiles()
-	if provider == "" || m.selected < 0 || m.selected >= len(profiles) {
+	info := m.selectedProfileInfo()
+	if provider == "" || info == nil {
 		m.statusMsg = "No profile selected"
 		return m, nil
 	}
@@ -1284,7 +1611,7 @@ func (m Model) handleSetProjectAssociation() (tea.Model, tea.Cmd) {
 		m.projectStore = project.NewStore("")
 	}
 
-	profileName := profiles[m.selected].Name
+	profileName := info.Name
 	if err := m.projectStore.SetAssociation(m.cwd, provider, profileName); err != nil {
 		m.statusMsg = err.Error()
 		return m, nil
@@ -1306,41 +1633,39 @@ func (m Model) handleSetProjectAssociation() (tea.Model, tea.Cmd) {
 func (m Model) executeConfirmedAction() (tea.Model, tea.Cmd) {
 	switch m.pendingAction {
 	case confirmActivate:
-		profiles := m.currentProfiles()
-		if m.selected >= 0 && m.selected < len(profiles) {
-			profile := profiles[m.selected]
+		info := m.selectedProfileInfo()
+		if info != nil {
 			provider := m.currentProvider()
 
-			m.statusMsg = fmt.Sprintf("Activating %s...", profile.Name)
+			m.statusMsg = fmt.Sprintf("Activating %s...", info.Name)
 			m.state = stateList
 			m.pendingAction = confirmNone
 
-			return m, m.doActivateProfile(provider, profile.Name)
+			return m, m.doActivateProfile(provider, info.Name)
 		}
 
 	case confirmDelete:
-		profiles := m.currentProfiles()
-		if m.selected >= 0 && m.selected < len(profiles) {
-			profile := profiles[m.selected]
+		info := m.selectedProfileInfo()
+		if info != nil {
 			provider := m.currentProvider()
 
 			// Perform the deletion via vault
 			vault := authfile.NewVault(m.vaultPath)
-			if err := vault.Delete(provider, profile.Name); err != nil {
-				m.showError(err, fmt.Sprintf("Delete %s", profile.Name))
+			if err := vault.Delete(provider, info.Name); err != nil {
+				m.showError(err, fmt.Sprintf("Delete %s", info.Name))
 				m.state = stateList
 				m.pendingAction = confirmNone
 				return m, nil
 			}
 
-			m.showDeleteSuccess(profile.Name)
+			m.showDeleteSuccess(info.Name)
 			m.state = stateList
 			m.pendingAction = confirmNone
 
 			// Refresh profiles with context for intelligent selection restoration
 			ctx := refreshContext{
 				provider:       provider,
-				deletedProfile: profile.Name,
+				deletedProfile: info.Name,
 			}
 			return m, m.refreshProfiles(ctx)
 		}
@@ -1366,6 +1691,185 @@ func (m Model) currentProvider() string {
 	return ""
 }
 
+func (m Model) selectedProfileInfo() *ProfileInfo {
+	if m.profilesPanel != nil {
+		if info := m.profilesPanel.GetSelectedProfile(); info != nil {
+			return info
+		}
+	}
+	profiles := m.currentProfiles()
+	if m.selected >= 0 && m.selected < len(profiles) {
+		provider := m.currentProvider()
+		projectDefault := m.projectDefaultForProvider(provider)
+		info := m.buildProfileInfo(provider, profiles[m.selected], projectDefault)
+		return &info
+	}
+	return nil
+}
+
+func (m Model) selectedProfileNameValue() string {
+	if info := m.selectedProfileInfo(); info != nil {
+		return info.Name
+	}
+	if m.selectedProfileName != "" {
+		return m.selectedProfileName
+	}
+	profiles := m.currentProfiles()
+	if m.selected >= 0 && m.selected < len(profiles) {
+		return profiles[m.selected].Name
+	}
+	return ""
+}
+
+func (m Model) profileMetaFor(provider, name string) *profile.Profile {
+	if m.profileMeta == nil {
+		return nil
+	}
+	byProvider, ok := m.profileMeta[provider]
+	if !ok {
+		return nil
+	}
+	return byProvider[name]
+}
+
+func (m Model) vaultMetaFor(provider, name string) vaultProfileMeta {
+	if m.vaultMeta == nil {
+		return vaultProfileMeta{}
+	}
+	byProvider, ok := m.vaultMeta[provider]
+	if !ok {
+		return vaultProfileMeta{}
+	}
+	return byProvider[name]
+}
+
+func loadVaultProfileMeta(vault *authfile.Vault, provider, name string) vaultProfileMeta {
+	meta := vaultProfileMeta{}
+	if vault == nil || provider == "" || name == "" {
+		return meta
+	}
+
+	profileDir := vault.ProfilePath(provider, name)
+	metaPath := filepath.Join(profileDir, "meta.json")
+	if raw, err := os.ReadFile(metaPath); err == nil {
+		var stored struct {
+			Description string `json:"description"`
+		}
+		if err := json.Unmarshal(raw, &stored); err == nil {
+			meta.Description = strings.TrimSpace(stored.Description)
+		}
+	}
+
+	meta.Account = vaultIdentityEmail(provider, profileDir)
+	return meta
+}
+
+func vaultIdentityEmail(provider, profileDir string) string {
+	var id *identity.Identity
+	switch provider {
+	case "codex":
+		id, _ = identity.ExtractFromCodexAuth(filepath.Join(profileDir, "auth.json"))
+	case "claude":
+		id, _ = identity.ExtractFromClaudeCredentials(filepath.Join(profileDir, ".credentials.json"))
+	case "gemini":
+		id, _ = identity.ExtractFromGeminiConfig(filepath.Join(profileDir, "settings.json"))
+		if id == nil {
+			id, _ = identity.ExtractFromGeminiConfig(filepath.Join(profileDir, "oauth_credentials.json"))
+		}
+	}
+	if id == nil {
+		return ""
+	}
+	return strings.TrimSpace(id.Email)
+}
+
+func profileAccountLabel(meta *profile.Profile) string {
+	if meta == nil {
+		return ""
+	}
+	if meta.AccountLabel != "" {
+		return meta.AccountLabel
+	}
+	if meta.Identity != nil && meta.Identity.Email != "" {
+		return meta.Identity.Email
+	}
+	return ""
+}
+
+func profileMatchesQuery(info ProfileInfo, query string) bool {
+	if query == "" {
+		return true
+	}
+	if strings.Contains(strings.ToLower(info.Name), query) {
+		return true
+	}
+	if info.Account != "" && strings.Contains(strings.ToLower(info.Account), query) {
+		return true
+	}
+	if info.Description != "" && strings.Contains(strings.ToLower(info.Description), query) {
+		return true
+	}
+	return false
+}
+
+func (m Model) buildProfileInfo(provider string, p Profile, projectDefault string) ProfileInfo {
+	authMode := "oauth"
+	account := ""
+	description := ""
+	lastUsed := time.Time{}
+	locked := false
+
+	meta := m.profileMetaFor(provider, p.Name)
+	if meta != nil {
+		if meta.AuthMode != "" {
+			authMode = meta.AuthMode
+		}
+		account = profileAccountLabel(meta)
+		description = meta.Description
+		lastUsed = meta.LastUsedAt
+		locked = meta.IsLocked()
+	}
+
+	vmeta := m.vaultMetaFor(provider, p.Name)
+	if account == "" {
+		account = vmeta.Account
+	}
+	if description == "" {
+		description = vmeta.Description
+	}
+
+	healthStatus := health.StatusUnknown
+	errorCount := 0
+	penalty := float64(0)
+	var tokenExpiry time.Time
+
+	if m.healthStorage != nil {
+		if h, err := m.healthStorage.GetProfile(provider, p.Name); err == nil && h != nil {
+			healthStatus = health.CalculateStatus(h)
+			errorCount = h.ErrorCount1h
+			penalty = h.Penalty
+			tokenExpiry = h.TokenExpiresAt
+		}
+	}
+
+	return ProfileInfo{
+		Name:           p.Name,
+		Badge:          m.badgeFor(provider, p.Name),
+		ProjectDefault: projectDefault != "" && p.Name == projectDefault,
+		AuthMode:       authMode,
+		LoggedIn:       true,
+		Locked:         locked,
+		LastUsed:       lastUsed,
+		Account:        account,
+		Description:    description,
+		IsActive:       p.IsActive,
+		HealthStatus:   healthStatus,
+		TokenExpiry:    tokenExpiry,
+		ErrorCount:     errorCount,
+		Penalty:        penalty,
+	}
+}
+
 // updateProviderCounts updates the provider panel with current profile counts.
 func (m *Model) updateProviderCounts() {
 	counts := make(map[string]int)
@@ -1381,47 +1885,51 @@ func (m *Model) syncProviderPanel() {
 }
 
 // syncProfilesPanel syncs the profiles panel with the current provider's profiles.
-func (m Model) syncProfilesPanel() {
+func (m *Model) syncProfilesPanel() {
 	if m.profilesPanel == nil {
 		return
 	}
 	provider := m.currentProvider()
 	m.profilesPanel.SetProvider(provider)
 
-	// Convert Profile to ProfileInfo
 	profiles := m.profiles[provider]
 	projectDefault := m.projectDefaultForProvider(provider)
-	infos := make([]ProfileInfo, len(profiles))
-	for i, p := range profiles {
-		// Default values for health data
-		healthStatus := health.StatusUnknown
-		errorCount := 0
-		penalty := float64(0)
-
-		// Fetch real health data if available
-		if m.healthStorage != nil {
-			if h, err := m.healthStorage.GetProfile(provider, p.Name); err == nil && h != nil {
-				healthStatus = health.CalculateStatus(h)
-				errorCount = h.ErrorCount1h
-				penalty = h.Penalty
-			}
-		}
-
-		infos[i] = ProfileInfo{
-			Name:           p.Name,
-			Badge:          m.badgeFor(provider, p.Name),
-			ProjectDefault: projectDefault != "" && p.Name == projectDefault,
-			AuthMode:       "oauth", // Default, TODO: get from actual profile
-			LoggedIn:       true,    // TODO: get actual status
-			Locked:         false,   // TODO: get actual lock status
-			IsActive:       p.IsActive,
-			HealthStatus:   healthStatus,
-			ErrorCount:     errorCount,
-			Penalty:        penalty,
-		}
+	infos := make([]ProfileInfo, 0, len(profiles))
+	for _, p := range profiles {
+		infos = append(infos, m.buildProfileInfo(provider, p, projectDefault))
 	}
 	m.profilesPanel.SetProfiles(infos)
-	m.profilesPanel.SetSelected(m.selected)
+
+	if len(infos) == 0 {
+		m.selected = 0
+		m.selectedProfileName = ""
+		return
+	}
+
+	selectedIndex := m.selected
+	if m.selectedProfileName != "" {
+		if m.profilesPanel.SetSelectedByName(m.selectedProfileName) {
+			selectedIndex = m.profilesPanel.GetSelected()
+		} else {
+			if selectedIndex < 0 {
+				selectedIndex = 0
+			}
+			if selectedIndex >= len(infos) {
+				selectedIndex = len(infos) - 1
+			}
+			m.profilesPanel.SetSelected(selectedIndex)
+		}
+	} else {
+		if selectedIndex < 0 || selectedIndex >= len(infos) {
+			selectedIndex = 0
+		}
+		m.profilesPanel.SetSelected(selectedIndex)
+	}
+
+	m.selected = selectedIndex
+	if info := m.profilesPanel.GetSelectedProfile(); info != nil {
+		m.selectedProfileName = info.Name
+	}
 }
 
 // syncDetailPanel syncs the detail panel with the currently selected profile.
@@ -1431,14 +1939,14 @@ func (m Model) syncDetailPanel() {
 	}
 
 	// Get the selected profile
-	profiles := m.currentProfiles()
-	if m.selected < 0 || m.selected >= len(profiles) {
+	info := m.selectedProfileInfo()
+	if info == nil {
 		m.detailPanel.SetProfile(nil)
 		return
 	}
 
-	prof := profiles[m.selected]
 	provider := m.currentProvider()
+	profileName := info.Name
 
 	// Default values for health data
 	healthStatus := health.StatusUnknown
@@ -1448,7 +1956,7 @@ func (m Model) syncDetailPanel() {
 
 	// Fetch real health data if available
 	if m.healthStorage != nil {
-		if h, err := m.healthStorage.GetProfile(provider, prof.Name); err == nil && h != nil {
+		if h, err := m.healthStorage.GetProfile(provider, profileName); err == nil && h != nil {
 			healthStatus = health.CalculateStatus(h)
 			errorCount = h.ErrorCount1h
 			penalty = h.Penalty
@@ -1456,14 +1964,61 @@ func (m Model) syncDetailPanel() {
 		}
 	}
 
+	authMode := "oauth"
+	account := ""
+	description := ""
+	path := ""
+	createdAt := time.Time{}
+	lastUsedAt := time.Time{}
+	browserCmd := ""
+	browserProf := ""
+	locked := false
+
+	meta := m.profileMetaFor(provider, profileName)
+	if meta != nil {
+		if meta.AuthMode != "" {
+			authMode = meta.AuthMode
+		}
+		account = profileAccountLabel(meta)
+		description = meta.Description
+		createdAt = meta.CreatedAt
+		lastUsedAt = meta.LastUsedAt
+		browserCmd = meta.BrowserCommand
+		if meta.BrowserProfileName != "" {
+			browserProf = meta.BrowserProfileName
+		} else {
+			browserProf = meta.BrowserProfileDir
+		}
+		path = meta.BasePath
+		locked = meta.IsLocked()
+	}
+
+	vmeta := m.vaultMetaFor(provider, profileName)
+	if account == "" {
+		account = vmeta.Account
+	}
+	if description == "" {
+		description = vmeta.Description
+	}
+
+	if path == "" {
+		vault := authfile.NewVault(m.vaultPath)
+		path = vault.ProfilePath(provider, profileName)
+	}
+
 	detail := &DetailInfo{
-		Name:         prof.Name,
+		Name:         profileName,
 		Provider:     provider,
-		AuthMode:     "oauth", // TODO: get from actual profile
-		LoggedIn:     true,    // TODO: get actual status
-		Locked:       false,   // TODO: get actual lock status
-		Path:         "",      // TODO: get from actual profile
-		Account:      "",      // TODO: get from actual profile
+		AuthMode:     authMode,
+		LoggedIn:     true,
+		Locked:       locked,
+		Path:         path,
+		CreatedAt:    createdAt,
+		LastUsedAt:   lastUsedAt,
+		Account:      account,
+		Description:  description,
+		BrowserCmd:   browserCmd,
+		BrowserProf:  browserProf,
 		HealthStatus: healthStatus,
 		TokenExpiry:  tokenExpiry,
 		ErrorCount:   errorCount,
@@ -1476,16 +2031,6 @@ func (m Model) syncDetailPanel() {
 func (m Model) View() string {
 	if m.width == 0 {
 		return "Loading..."
-	}
-
-	if m.usagePanel != nil && m.usagePanel.Visible() {
-		m.usagePanel.SetSize(m.width, m.height)
-		return m.usagePanel.View()
-	}
-
-	if m.syncPanel != nil && m.syncPanel.Visible() {
-		m.syncPanel.SetSize(m.width, m.height)
-		return m.syncPanel.View()
 	}
 
 	switch m.state {
@@ -1510,7 +2055,30 @@ func (m Model) View() string {
 			return m.dialogOverlayView(m.confirmDialog.View())
 		}
 		return m.mainView()
+	case stateEditProfile:
+		if m.editDialog != nil {
+			return m.dialogOverlayView(m.editDialog.View())
+		}
+		return m.mainView()
+	case stateSyncAdd:
+		if m.syncAddDialog != nil {
+			return m.dialogOverlayView(m.syncAddDialog.View())
+		}
+		return m.mainView()
+	case stateSyncEdit:
+		if m.syncEditDialog != nil {
+			return m.dialogOverlayView(m.syncEditDialog.View())
+		}
+		return m.mainView()
 	default:
+		if m.usagePanel != nil && m.usagePanel.Visible() {
+			m.usagePanel.SetSize(m.width, m.height)
+			return m.usagePanel.View()
+		}
+		if m.syncPanel != nil && m.syncPanel.Visible() {
+			m.syncPanel.SetSize(m.width, m.height)
+			return m.syncPanel.View()
+		}
 		return m.mainView()
 	}
 }
@@ -1992,9 +2560,11 @@ type refreshContext struct {
 
 // profilesRefreshedMsg is sent when profiles are reloaded after a mutation.
 type profilesRefreshedMsg struct {
-	profiles map[string][]Profile
-	ctx      refreshContext
-	err      error
+	profiles  map[string][]Profile
+	meta      map[string]map[string]*profile.Profile
+	vaultMeta map[string]map[string]vaultProfileMeta
+	ctx       refreshContext
+	err       error
 }
 
 // refreshProfiles returns a tea.Cmd that reloads profiles from the vault
@@ -2003,6 +2573,13 @@ func (m Model) refreshProfiles(ctx refreshContext) tea.Cmd {
 	return func() tea.Msg {
 		vault := authfile.NewVault(m.vaultPath)
 		profiles := make(map[string][]Profile)
+		meta := make(map[string]map[string]*profile.Profile)
+		vaultMeta := make(map[string]map[string]vaultProfileMeta)
+
+		store := m.profileStore
+		if store == nil {
+			store = profile.NewStore(profile.DefaultStorePath())
+		}
 
 		for _, name := range m.providers {
 			names, err := vault.List(name)
@@ -2024,17 +2601,25 @@ func (m Model) refreshProfiles(ctx refreshContext) tea.Cmd {
 
 			sort.Strings(names)
 			ps := make([]Profile, 0, len(names))
+			meta[name] = make(map[string]*profile.Profile)
+			vaultMeta[name] = make(map[string]vaultProfileMeta)
 			for _, prof := range names {
 				ps = append(ps, Profile{
 					Name:     prof,
 					Provider: name,
 					IsActive: prof == active,
 				})
+				if store != nil {
+					if loaded, err := store.Load(name, prof); err == nil && loaded != nil {
+						meta[name][prof] = loaded
+					}
+				}
+				vaultMeta[name][prof] = loadVaultProfileMeta(vault, name, prof)
 			}
 			profiles[name] = ps
 		}
 
-		return profilesRefreshedMsg{profiles: profiles, ctx: ctx}
+		return profilesRefreshedMsg{profiles: profiles, meta: meta, vaultMeta: vaultMeta, ctx: ctx}
 	}
 }
 
@@ -2044,8 +2629,8 @@ func (m Model) refreshProfilesSimple() tea.Cmd {
 	ctx := refreshContext{
 		provider: m.currentProvider(),
 	}
-	if profiles := m.currentProfiles(); m.selected >= 0 && m.selected < len(profiles) {
-		ctx.selectedProfile = profiles[m.selected].Name
+	if name := m.selectedProfileNameValue(); name != "" {
+		ctx.selectedProfile = name
 	}
 	return m.refreshProfiles(ctx)
 }
@@ -2057,7 +2642,17 @@ func (m *Model) restoreSelection(ctx refreshContext) {
 	profiles := m.currentProfiles()
 	if len(profiles) == 0 {
 		m.selected = 0
+		m.selectedProfileName = ""
 		return
+	}
+
+	indexByName := func(name string) int {
+		for i, p := range profiles {
+			if p.Name == name {
+				return i
+			}
+		}
+		return -1
 	}
 
 	// If a profile was deleted, try to select the next one in the list
@@ -2065,35 +2660,46 @@ func (m *Model) restoreSelection(ctx refreshContext) {
 		// Find position where deleted profile was (profiles are sorted)
 		for i, p := range profiles {
 			if p.Name > ctx.deletedProfile {
-				// Select the profile that took its place
-				m.selected = i
-				if m.selected > 0 {
-					m.selected-- // Prefer previous profile if available
+				// Select the profile that took its place (prefer previous if possible)
+				selected := i
+				if selected > 0 {
+					selected--
 				}
+				m.selectedProfileName = profiles[selected].Name
+				m.selected = selected
 				return
 			}
 		}
 		// Deleted profile was last, select new last
+		m.selectedProfileName = profiles[len(profiles)-1].Name
 		m.selected = len(profiles) - 1
 		return
 	}
 
 	// Try to find the previously selected profile by name
 	if ctx.selectedProfile != "" {
-		for i, p := range profiles {
-			if p.Name == ctx.selectedProfile {
-				m.selected = i
-				return
-			}
+		m.selectedProfileName = ctx.selectedProfile
+		if idx := indexByName(ctx.selectedProfile); idx >= 0 {
+			m.selected = idx
+		} else {
+			m.selected = 0
 		}
+		return
 	}
 
-	// Fallback: keep current index if valid, otherwise clamp to range
-	if m.selected >= len(profiles) {
-		m.selected = len(profiles) - 1
+	// Fallback: keep current profile name if available, otherwise derive from index
+	if m.selectedProfileName == "" {
+		if m.selected >= 0 && m.selected < len(profiles) {
+			m.selectedProfileName = profiles[m.selected].Name
+		} else {
+			m.selectedProfileName = profiles[0].Name
+		}
 	}
-	if m.selected < 0 {
+	if idx := indexByName(m.selectedProfileName); idx >= 0 {
+		m.selected = idx
+	} else {
 		m.selected = 0
+		m.selectedProfileName = profiles[0].Name
 	}
 }
 

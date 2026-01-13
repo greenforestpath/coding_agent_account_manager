@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 
@@ -45,11 +46,14 @@ type syncTestResultMsg struct {
 // syncStartedMsg is sent when a sync operation starts.
 type syncStartedMsg struct {
 	machineID string
+	machineName string
 }
 
 // syncCompletedMsg is sent when a sync operation completes.
 type syncCompletedMsg struct {
 	machineID string
+	machineName string
+	stats   sync.SyncStats
 	err       error
 }
 
@@ -188,6 +192,38 @@ func (m Model) testSyncMachine(machineID string) tea.Cmd {
 			success:   result.Success,
 			message:   msg,
 			err:       result.Error,
+		}
+	}
+}
+
+// syncWithMachine runs a sync against a single machine.
+func (m Model) syncWithMachine(machineID string) tea.Cmd {
+	return func() tea.Msg {
+		state, err := sync.LoadSyncState()
+		if err != nil {
+			return syncCompletedMsg{machineID: machineID, err: err}
+		}
+
+		machine := state.Pool.GetMachine(machineID)
+		if machine == nil {
+			return syncCompletedMsg{machineID: machineID, err: fmt.Errorf("machine not found")}
+		}
+
+		syncer, err := sync.NewSyncer(sync.DefaultSyncerConfig())
+		if err != nil {
+			return syncCompletedMsg{machineID: machineID, machineName: machine.Name, err: err}
+		}
+		defer syncer.Close()
+
+		results, err := syncer.SyncWithMachine(context.Background(), machine)
+		if err != nil {
+			return syncCompletedMsg{machineID: machineID, machineName: machine.Name, err: err}
+		}
+
+		return syncCompletedMsg{
+			machineID:   machineID,
+			machineName: machine.Name,
+			stats:       sync.AggregateResults(results),
 		}
 	}
 }

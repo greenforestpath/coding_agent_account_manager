@@ -61,7 +61,7 @@ func (p *SyncPanel) renderMachineList() string {
 		rows = append(rows, row)
 	}
 
-	keyHints := p.styles.KeyHint.Render("\n[a]dd  [r]emove  [t]est  [s]ync  [e]dit  [esc] close")
+	keyHints := p.styles.KeyHint.Render("\n[a]dd  [e]dit  [r]emove  [t]est  [s]ync  [esc] close")
 	return strings.Join(rows, "\n") + keyHints
 }
 

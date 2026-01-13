@@ -787,22 +787,30 @@ func TestSyncTestResultMsg(t *testing.T) {
 
 func TestSyncStartedMsg(t *testing.T) {
 	msg := syncStartedMsg{
-		machineID: "test-id",
+		machineID:   "test-id",
+		machineName: "test-machine",
 	}
 
 	if msg.machineID != "test-id" {
 		t.Errorf("machineID = %q, want test-id", msg.machineID)
+	}
+	if msg.machineName != "test-machine" {
+		t.Errorf("machineName = %q, want test-machine", msg.machineName)
 	}
 }
 
 func TestSyncCompletedMsg(t *testing.T) {
 	msg := syncCompletedMsg{
-		machineID: "test-id",
-		err:       nil,
+		machineID:   "test-id",
+		machineName: "test-machine",
+		err:         nil,
 	}
 
 	if msg.machineID != "test-id" {
 		t.Errorf("machineID = %q, want test-id", msg.machineID)
+	}
+	if msg.machineName != "test-machine" {
+		t.Errorf("machineName = %q, want test-machine", msg.machineName)
 	}
 	if msg.err != nil {
 		t.Error("err should be nil")
