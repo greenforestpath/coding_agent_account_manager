@@ -171,6 +171,27 @@ func TestAuthPool_SetStatus_ClearsErrorOnReady(t *testing.T) {
 	}
 }
 
+func TestAuthPool_TryMarkRefreshing(t *testing.T) {
+	p := NewAuthPool()
+	p.AddProfile("claude", "test")
+
+	if ok := p.TryMarkRefreshing("claude", "test"); !ok {
+		t.Fatal("TryMarkRefreshing() = false, want true for first call")
+	}
+
+	if status := p.GetStatus("claude", "test"); status != PoolStatusRefreshing {
+		t.Fatalf("Status after TryMarkRefreshing() = %v, want Refreshing", status)
+	}
+
+	if ok := p.TryMarkRefreshing("claude", "test"); ok {
+		t.Fatal("TryMarkRefreshing() = true, want false when already refreshing")
+	}
+
+	if ok := p.TryMarkRefreshing("claude", "missing"); ok {
+		t.Fatal("TryMarkRefreshing() = true, want false for missing profile")
+	}
+}
+
 type errTest string
 
 func (e errTest) Error() string { return string(e) }
@@ -529,6 +550,52 @@ func TestAuthPool_CheckAndUpdateCooldowns(t *testing.T) {
 	profile := p.GetProfile("claude", "test")
 	if profile.Status != PoolStatusReady {
 		t.Errorf("Status = %v after cooldown cleared, want Ready", profile.Status)
+	}
+}
+
+func TestAuthPool_CheckAndUpdateCooldowns_FiresCallback(t *testing.T) {
+	var callbackCalled bool
+	var callbackProfile *PooledProfile
+	var callbackOldStatus, callbackNewStatus PoolStatus
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	p := NewAuthPool(
+		WithOnStateChange(func(profile *PooledProfile, oldStatus, newStatus PoolStatus) {
+			callbackCalled = true
+			callbackProfile = profile
+			callbackOldStatus = oldStatus
+			callbackNewStatus = newStatus
+			wg.Done()
+		}),
+	)
+
+	// Add profile with expired cooldown
+	p.AddProfile("claude", "test")
+	p.mu.Lock()
+	p.profiles["claude:test"].Status = PoolStatusCooldown
+	p.profiles["claude:test"].CooldownUntil = time.Now().Add(-time.Minute) // Already expired
+	p.mu.Unlock()
+
+	cleared := p.CheckAndUpdateCooldowns()
+	if cleared != 1 {
+		t.Fatalf("CheckAndUpdateCooldowns() = %d, want 1", cleared)
+	}
+
+	// Wait for callback (it's async)
+	wg.Wait()
+
+	if !callbackCalled {
+		t.Error("OnStateChange callback was not called")
+	}
+	if callbackProfile == nil || callbackProfile.ProfileName != "test" {
+		t.Error("callback received wrong profile")
+	}
+	if callbackOldStatus != PoolStatusCooldown {
+		t.Errorf("oldStatus = %v, want Cooldown", callbackOldStatus)
+	}
+	if callbackNewStatus != PoolStatusReady {
+		t.Errorf("newStatus = %v, want Ready", callbackNewStatus)
 	}
 }
 

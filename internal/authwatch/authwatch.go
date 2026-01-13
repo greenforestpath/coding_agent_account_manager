@@ -12,8 +12,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -122,8 +124,8 @@ func (t *Tracker) Capture(provider string) (*AuthState, error) {
 		hashStr := hex.EncodeToString(fileHash[:])
 		state.FileHashes[spec.Path] = hashStr
 
-		// Add to combined hash
-		hasher.Write(content)
+		// Add to combined hash with filename + length delimiters to avoid ambiguity.
+		writeHashComponent(hasher, filepath.Base(spec.Path), content)
 		state.Exists = true
 	}
 
@@ -290,6 +292,9 @@ func (t *Tracker) getProfileHash(provider, profile string) (string, error) {
 	fileSet := getFileSet(provider)
 
 	hasher := sha256.New()
+	requiredFound := false
+	optionalFound := false
+	var missingRequired []string
 
 	for _, spec := range fileSet.Files {
 		// Map source path to profile path
@@ -299,12 +304,29 @@ func (t *Tracker) getProfileHash(provider, profile string) (string, error) {
 		content, err := os.ReadFile(profileFilePath)
 		if err != nil {
 			if os.IsNotExist(err) {
+				if spec.Required {
+					missingRequired = append(missingRequired, profileFilePath)
+				}
 				continue
 			}
 			return "", err
 		}
 
-		hasher.Write(content)
+		writeHashComponent(hasher, fileName, content)
+		if spec.Required {
+			requiredFound = true
+		} else {
+			optionalFound = true
+		}
+	}
+
+	if !requiredFound && !optionalFound {
+		return "", fmt.Errorf("no auth files found for %s/%s", provider, profile)
+	}
+	if len(missingRequired) > 0 {
+		if !(fileSet.AllowOptionalOnly && !requiredFound && optionalFound) {
+			return "", fmt.Errorf("required backup not found: %s", missingRequired[0])
+		}
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil
@@ -378,6 +400,9 @@ type StateFile struct {
 
 // StatePath returns the path to the state file.
 func StatePath() string {
+	if caamHome := os.Getenv("CAAM_HOME"); caamHome != "" {
+		return filepath.Join(caamHome, "data", "auth_state.json")
+	}
 	homeDir, _ := os.UserHomeDir()
 	xdgData := os.Getenv("XDG_DATA_HOME")
 	if xdgData == "" {
@@ -513,6 +538,23 @@ func FormatUnsavedWarning(providers []string) string {
 	buf.WriteString("Run 'caam backup <tool> <profile-name>' to save them.\n")
 
 	return buf.String()
+}
+
+func writeHashComponent(hasher hash.Hash, name string, content []byte) {
+	if hasher == nil {
+		return
+	}
+
+	hasher.Write([]byte(name))
+	hasher.Write([]byte{0})
+
+	var lenBuf [20]byte
+	lenBytes := strconv.AppendInt(lenBuf[:0], int64(len(content)), 10)
+	hasher.Write(lenBytes)
+	hasher.Write([]byte{0})
+
+	hasher.Write(content)
+	hasher.Write([]byte{0})
 }
 
 // Watcher provides real-time monitoring of auth file changes.

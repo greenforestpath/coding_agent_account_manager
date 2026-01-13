@@ -69,6 +69,9 @@ func NewStorage(path string) *Storage {
 
 // DefaultHealthPath returns the default health file location.
 func DefaultHealthPath() string {
+	if caamHome := os.Getenv("CAAM_HOME"); caamHome != "" {
+		return filepath.Join(caamHome, "data", "health.json")
+	}
 	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
 		return filepath.Join(xdgData, "caam", "health.json")
 	}

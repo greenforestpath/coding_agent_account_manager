@@ -174,6 +174,27 @@ func (p *AuthPool) SetStatus(provider, name string, status PoolStatus) error {
 	return nil
 }
 
+// TryMarkRefreshing marks a profile as refreshing if it is not already.
+// Returns true if the status was updated, false if the profile does not exist
+// or is already refreshing.
+func (p *AuthPool) TryMarkRefreshing(provider, name string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	key := profileKey(provider, name)
+	profile, ok := p.profiles[key]
+	if !ok {
+		return false
+	}
+	if profile.Status == PoolStatusRefreshing {
+		return false
+	}
+
+	profile.Status = PoolStatusRefreshing
+	profile.LastCheck = time.Now()
+	return true
+}
+
 // SetError records an error for a profile.
 func (p *AuthPool) SetError(provider, name string, err error) {
 	p.mu.Lock()
@@ -440,10 +461,12 @@ func (p *AuthPool) CountByStatus() map[PoolStatus]int {
 // CheckAndUpdateCooldowns checks profiles in cooldown and clears expired cooldowns.
 func (p *AuthPool) CheckAndUpdateCooldowns() int {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	cleared := 0
 	now := time.Now()
+
+	// Collect profiles that need callback (fire outside lock)
+	var callbackProfiles []*PooledProfile
 
 	for _, profile := range p.profiles {
 		if profile.Status == PoolStatusCooldown && !profile.CooldownUntil.IsZero() {
@@ -451,8 +474,18 @@ func (p *AuthPool) CheckAndUpdateCooldowns() int {
 				profile.Status = PoolStatusReady
 				profile.CooldownUntil = time.Time{}
 				cleared++
+				if p.onStateChange != nil {
+					callbackProfiles = append(callbackProfiles, profile.Clone())
+				}
 			}
 		}
+	}
+
+	p.mu.Unlock()
+
+	// Fire callbacks outside lock
+	for _, clone := range callbackProfiles {
+		go p.onStateChange(clone, PoolStatusCooldown, PoolStatusReady)
 	}
 
 	return cleared

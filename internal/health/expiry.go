@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -364,15 +366,23 @@ func parseOAuthFile(path string) (*ExpiryInfo, error) {
 		if issuedAt.IsZero() {
 			issuedAt = parseExpiryField(oauth.IssuedTime)
 		}
-		if !issuedAt.IsZero() {
-			info.ExpiresAt = issuedAt.Add(time.Duration(expiresIn) * time.Second)
-			return info, nil
+		if issuedAt.IsZero() {
+			// If issued_at is missing, assume now (common for OAuth tokens).
+			issuedAt = time.Now()
 		}
+		info.ExpiresAt = issuedAt.Add(time.Duration(expiresIn) * time.Second)
+		return info, nil
 	}
 	if expiresIn := parseExpiresIn(oauth.ExpiresInCamel); expiresIn > 0 {
-		// Without issued_at, assume now (less accurate but better than nothing)
-		// This is a fallback for tokens that only have expires_in
-		info.ExpiresAt = time.Now().Add(time.Duration(expiresIn) * time.Second)
+		issuedAt := parseExpiryField(oauth.IssuedAt)
+		if issuedAt.IsZero() {
+			issuedAt = parseExpiryField(oauth.IssuedTime)
+		}
+		if issuedAt.IsZero() {
+			// Without issued_at, assume now (less accurate but better than nothing)
+			issuedAt = time.Now()
+		}
+		info.ExpiresAt = issuedAt.Add(time.Duration(expiresIn) * time.Second)
 		return info, nil
 	}
 
@@ -423,6 +433,10 @@ func parseExpiryField(v any) time.Time {
 
 	switch val := v.(type) {
 	case string:
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return time.Time{}
+		}
 		// Try ISO8601 / RFC3339
 		if t, err := time.Parse(time.RFC3339, val); err == nil {
 			return t
@@ -440,6 +454,16 @@ func parseExpiryField(v any) time.Time {
 		for _, format := range formats {
 			if t, err := time.Parse(format, val); err == nil {
 				return t
+			}
+		}
+
+		// Try numeric strings (unix seconds or milliseconds).
+		if isNumericString(val) {
+			if num, err := strconv.ParseFloat(val, 64); err == nil {
+				if num > 1e12 {
+					return time.UnixMilli(int64(num))
+				}
+				return time.Unix(int64(num), 0)
 			}
 		}
 
@@ -465,6 +489,27 @@ func parseExpiryField(v any) time.Time {
 	}
 
 	return time.Time{}
+}
+
+func isNumericString(s string) bool {
+	if s == "" {
+		return false
+	}
+	hasDigit := false
+	for i, r := range s {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			continue
+		}
+		if r == '.' {
+			continue
+		}
+		if (r == '-' || r == '+') && i == 0 {
+			continue
+		}
+		return false
+	}
+	return hasDigit
 }
 
 // parseExpiresIn extracts seconds from an expires_in field.

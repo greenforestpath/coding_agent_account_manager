@@ -339,8 +339,11 @@ func TestSaveAndLoadState(t *testing.T) {
 	vault := authfile.NewVault(tmpDir)
 
 	// Override state path
+	oldCaam := os.Getenv("CAAM_HOME")
 	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Unsetenv("CAAM_HOME")
 	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("CAAM_HOME", oldCaam)
 	defer os.Setenv("XDG_DATA_HOME", oldXDG)
 
 	codexDir := filepath.Join(tmpDir, "codex")
@@ -401,8 +404,11 @@ func TestLoadStateNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
 	vault := authfile.NewVault(tmpDir)
 
+	oldCaam := os.Getenv("CAAM_HOME")
 	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Unsetenv("CAAM_HOME")
 	os.Setenv("XDG_DATA_HOME", filepath.Join(tmpDir, "nonexistent"))
+	defer os.Setenv("CAAM_HOME", oldCaam)
 	defer os.Setenv("XDG_DATA_HOME", oldXDG)
 
 	tracker := NewTracker(vault)
@@ -696,6 +702,67 @@ func TestMatchesProfile(t *testing.T) {
 	}
 }
 
+func TestMatchesProfile_MissingRequiredBackup(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	codexDir := filepath.Join(tmpDir, "codex")
+	if err := os.MkdirAll(codexDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	authPath := filepath.Join(codexDir, "auth.json")
+	if err := os.WriteFile(authPath, []byte(`{"token":"test-token"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCodexHome := os.Getenv("CODEX_HOME")
+	os.Setenv("CODEX_HOME", codexDir)
+	defer os.Setenv("CODEX_HOME", oldCodexHome)
+
+	tracker := NewTracker(vault)
+
+	if _, err := tracker.MatchesProfile("codex", "missing-profile"); err == nil {
+		t.Fatal("expected error for missing required backup")
+	}
+}
+
+func TestMatchesProfile_OptionalOnlyAllowed(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	oldHome := os.Getenv("HOME")
+	oldXDG := os.Getenv("XDG_CONFIG_HOME")
+	os.Setenv("HOME", tmpDir)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "config"))
+	defer func() {
+		os.Setenv("HOME", oldHome)
+		os.Setenv("XDG_CONFIG_HOME", oldXDG)
+	}()
+
+	authContent := []byte(`{"session":"opt"}`)
+	if err := os.WriteFile(filepath.Join(tmpDir, ".claude.json"), authContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	profileDir := vault.ProfilePath("claude", "optional-only")
+	if err := os.MkdirAll(profileDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, ".claude.json"), authContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	tracker := NewTracker(vault)
+
+	matches, err := tracker.MatchesProfile("claude", "optional-only")
+	if err != nil {
+		t.Fatalf("MatchesProfile failed: %v", err)
+	}
+	if !matches {
+		t.Fatal("expected optional-only profile to match")
+	}
+}
+
 func TestMatchesProfile_NoVault(t *testing.T) {
 	tracker := NewTracker(nil)
 
@@ -963,8 +1030,11 @@ func TestLoadStateInvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	vault := authfile.NewVault(tmpDir)
 
+	oldCaam := os.Getenv("CAAM_HOME")
 	oldXDG := os.Getenv("XDG_DATA_HOME")
+	os.Unsetenv("CAAM_HOME")
 	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Setenv("CAAM_HOME", oldCaam)
 	defer os.Setenv("XDG_DATA_HOME", oldXDG)
 
 	// Create invalid JSON state file

@@ -14,6 +14,9 @@ const StateVersion = 1
 
 // DefaultStatePath returns the default path for the state file.
 func DefaultStatePath() string {
+	if caamHome := os.Getenv("CAAM_HOME"); caamHome != "" {
+		return filepath.Join(caamHome, "data", "auth_pool_state.json")
+	}
 	dataDir := os.Getenv("XDG_DATA_HOME")
 	if dataDir == "" {
 		home, _ := os.UserHomeDir()
@@ -24,9 +27,9 @@ func DefaultStatePath() string {
 
 // PersistedPoolState represents the serializable state of an AuthPool.
 type PersistedPoolState struct {
-	Version   int                           `json:"version"`
-	UpdatedAt time.Time                     `json:"updated_at"`
-	Profiles  map[string]*PersistedProfile  `json:"profiles"`
+	Version   int                          `json:"version"`
+	UpdatedAt time.Time                    `json:"updated_at"`
+	Profiles  map[string]*PersistedProfile `json:"profiles"`
 }
 
 // PersistedProfile represents a serializable profile state.

@@ -253,10 +253,28 @@ func TestCalculateStatus(t *testing.T) {
 }
 
 func TestDefaultHealthPath(t *testing.T) {
+	t.Run("with CAAM_HOME", func(t *testing.T) {
+		origCaam := os.Getenv("CAAM_HOME")
+		origXDG := os.Getenv("XDG_DATA_HOME")
+		defer os.Setenv("CAAM_HOME", origCaam)
+		defer os.Setenv("XDG_DATA_HOME", origXDG)
+
+		os.Setenv("CAAM_HOME", "/custom/caam")
+		os.Setenv("XDG_DATA_HOME", "/custom/data")
+		path := DefaultHealthPath()
+		expected := "/custom/caam/data/health.json"
+		if path != expected {
+			t.Errorf("expected %s, got %s", expected, path)
+		}
+	})
+
 	t.Run("with XDG_DATA_HOME", func(t *testing.T) {
+		origCaam := os.Getenv("CAAM_HOME")
 		orig := os.Getenv("XDG_DATA_HOME")
+		defer os.Setenv("CAAM_HOME", origCaam)
 		defer os.Setenv("XDG_DATA_HOME", orig)
 
+		os.Unsetenv("CAAM_HOME")
 		os.Setenv("XDG_DATA_HOME", "/custom/data")
 		path := DefaultHealthPath()
 		expected := "/custom/data/caam/health.json"
@@ -266,9 +284,12 @@ func TestDefaultHealthPath(t *testing.T) {
 	})
 
 	t.Run("without XDG_DATA_HOME", func(t *testing.T) {
+		origCaam := os.Getenv("CAAM_HOME")
 		orig := os.Getenv("XDG_DATA_HOME")
+		defer os.Setenv("CAAM_HOME", origCaam)
 		defer os.Setenv("XDG_DATA_HOME", orig)
 
+		os.Unsetenv("CAAM_HOME")
 		os.Setenv("XDG_DATA_HOME", "")
 		path := DefaultHealthPath()
 		// Should use home dir

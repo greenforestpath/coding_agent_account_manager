@@ -180,6 +180,11 @@ func (m *Monitor) triggerRefresh(ctx context.Context, provider, profile string) 
 		return
 	}
 
+	if !m.pool.TryMarkRefreshing(provider, profile) {
+		<-m.semaphore
+		return
+	}
+
 	m.refreshWg.Add(1)
 	go func() {
 		defer m.refreshWg.Done()
