@@ -147,11 +147,11 @@ func (p *AuthPool) GetStatus(provider, name string) PoolStatus {
 // SetStatus updates a profile's status.
 func (p *AuthPool) SetStatus(provider, name string, status PoolStatus) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	key := profileKey(provider, name)
 	profile, ok := p.profiles[key]
 	if !ok {
+		p.mu.Unlock()
 		return fmt.Errorf("profile %s not found in pool", key)
 	}
 
@@ -165,9 +165,16 @@ func (p *AuthPool) SetStatus(provider, name string, status PoolStatus) error {
 		profile.ErrorMessage = ""
 	}
 
-	// Fire callback outside lock
+	var shouldCallback bool
+	var clone *PooledProfile
 	if p.onStateChange != nil && oldStatus != status {
-		clone := profile.Clone()
+		shouldCallback = true
+		clone = profile.Clone()
+	}
+	p.mu.Unlock()
+
+	// Fire callback outside lock
+	if shouldCallback {
 		go p.onStateChange(clone, oldStatus, status)
 	}
 
@@ -222,11 +229,11 @@ func (p *AuthPool) SetCooldown(provider, name string, duration time.Duration) {
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	key := profileKey(provider, name)
 	profile, ok := p.profiles[key]
 	if !ok {
+		p.mu.Unlock()
 		return
 	}
 
@@ -235,8 +242,16 @@ func (p *AuthPool) SetCooldown(provider, name string, duration time.Duration) {
 	profile.CooldownUntil = time.Now().Add(duration)
 	profile.LastCheck = time.Now()
 
+	var shouldCallback bool
+	var clone *PooledProfile
 	if p.onStateChange != nil && oldStatus != PoolStatusCooldown {
-		clone := profile.Clone()
+		shouldCallback = true
+		clone = profile.Clone()
+	}
+	p.mu.Unlock()
+
+	// Fire callback outside lock
+	if shouldCallback {
 		go p.onStateChange(clone, oldStatus, PoolStatusCooldown)
 	}
 }

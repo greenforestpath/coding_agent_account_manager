@@ -53,7 +53,9 @@ type Monitor struct {
 	// State
 	mu        sync.Mutex
 	running   bool
+	stopping  bool      // Set when Stop() is called, prevents new refreshes
 	stopCh    chan struct{}
+	stopOnce  sync.Once // Ensures stopCh is only closed once
 	refreshWg sync.WaitGroup
 	semaphore chan struct{}
 }
@@ -94,7 +96,9 @@ func (m *Monitor) Start(ctx context.Context) error {
 	}
 
 	m.running = true
+	m.stopping = false // Reset stopping flag for new cycle
 	m.stopCh = make(chan struct{})
+	m.stopOnce = sync.Once{} // Reset for new Start cycle
 
 	go m.runLoop(ctx)
 	return nil
@@ -109,8 +113,16 @@ func (m *Monitor) Stop() {
 		return
 	}
 
-	close(m.stopCh)
+	// Set stopping flag BEFORE releasing lock to prevent new refreshes
+	// from starting. This prevents race with refreshWg.Wait() below.
+	m.stopping = true
 	m.running = false
+
+	// Use sync.Once to ensure stopCh is only closed once, preventing panic
+	// if Stop() is called concurrently or multiple times.
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 	m.mu.Unlock()
 
 	// Wait for in-flight refreshes to complete
@@ -185,7 +197,20 @@ func (m *Monitor) triggerRefresh(ctx context.Context, provider, profile string) 
 		return
 	}
 
+	// Check if we're stopping before adding to WaitGroup to prevent race
+	// with Stop() calling refreshWg.Wait(). Must hold lock to safely check
+	// stopping flag and add to WaitGroup atomically.
+	// Note: we check stopping (not running) to allow RefreshAll to work
+	// when the monitor hasn't been started.
+	m.mu.Lock()
+	if m.stopping {
+		m.mu.Unlock()
+		<-m.semaphore
+		return
+	}
 	m.refreshWg.Add(1)
+	m.mu.Unlock()
+
 	go func() {
 		defer m.refreshWg.Done()
 		defer func() { <-m.semaphore }()
@@ -235,6 +260,7 @@ func (m *Monitor) doRefresh(ctx context.Context, provider, profile string) {
 }
 
 // ForceRefresh triggers an immediate refresh for a specific profile.
+// This respects the MaxConcurrent semaphore to prevent overwhelming the system.
 func (m *Monitor) ForceRefresh(ctx context.Context, provider, profile string) error {
 	// Verify profile exists
 	p := m.pool.GetProfile(provider, profile)
@@ -247,7 +273,16 @@ func (m *Monitor) ForceRefresh(ctx context.Context, provider, profile string) er
 		return fmt.Errorf("profile %s/%s already refreshing", provider, profile)
 	}
 
-	// Perform refresh directly (synchronous)
+	// Acquire semaphore slot (blocking, with context cancellation)
+	select {
+	case m.semaphore <- struct{}{}:
+		// Got slot, proceed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-m.semaphore }()
+
+	// Perform refresh (synchronous)
 	m.doRefresh(ctx, provider, profile)
 
 	// Check result
