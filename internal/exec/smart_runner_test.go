@@ -48,9 +48,9 @@ func TestNewSmartRunner(t *testing.T) {
 	t.Run("creates runner with defaults", func(t *testing.T) {
 		registry := provider.NewRegistry()
 		runner := NewRunner(registry)
-		
+
 		sr := NewSmartRunner(runner, SmartRunnerOptions{})
-		
+
 		if sr == nil {
 			t.Fatal("NewSmartRunner returned nil")
 		}
@@ -76,14 +76,14 @@ func TestNewSmartRunner(t *testing.T) {
 			MaxRetries:       3,
 			FallbackToManual: true,
 		}
-		
+
 		sr := NewSmartRunner(runner, SmartRunnerOptions{
 			Vault:         vault,
 			AuthPool:      pool,
 			Notifier:      notifier,
 			HandoffConfig: handoffCfg,
 		})
-		
+
 		if sr.vault != vault {
 			t.Error("vault not set correctly")
 		}
@@ -103,7 +103,7 @@ func TestSmartRunner_setState(t *testing.T) {
 	registry := provider.NewRegistry()
 	runner := NewRunner(registry)
 	sr := NewSmartRunner(runner, SmartRunnerOptions{})
-	
+
 	states := []HandoffState{
 		Running,
 		RateLimited,
@@ -114,15 +114,15 @@ func TestSmartRunner_setState(t *testing.T) {
 		HandoffFailed,
 		ManualMode,
 	}
-	
+
 	for _, state := range states {
 		t.Run(state.String(), func(t *testing.T) {
 			sr.setState(state)
-			
+
 			sr.mu.Lock()
 			got := sr.state
 			sr.mu.Unlock()
-			
+
 			if got != state {
 				t.Errorf("setState() = %v, want %v", got, state)
 			}
@@ -134,7 +134,7 @@ func TestSmartRunner_InitialState(t *testing.T) {
 	registry := provider.NewRegistry()
 	runner := NewRunner(registry)
 	sr := NewSmartRunner(runner, SmartRunnerOptions{})
-	
+
 	if sr.handoffCount != 0 {
 		t.Errorf("initial handoffCount = %d, want 0", sr.handoffCount)
 	}
@@ -144,6 +144,24 @@ func TestSmartRunner_InitialState(t *testing.T) {
 	if sr.previousProfile != "" {
 		t.Errorf("initial previousProfile = %q, want empty", sr.previousProfile)
 	}
+}
+
+func TestSmartRunner_DrainLoginDone(t *testing.T) {
+	registry := provider.NewRegistry()
+	runner := NewRunner(registry)
+	sr := NewSmartRunner(runner, SmartRunnerOptions{})
+
+	sr.loginDone <- loginResult{success: true}
+	sr.drainLoginDone()
+
+	select {
+	case <-sr.loginDone:
+		t.Fatal("expected loginDone to be empty after drain")
+	default:
+	}
+
+	// Ensure drain is safe on empty channel
+	sr.drainLoginDone()
 }
 
 // =============================================================================
@@ -171,14 +189,14 @@ func TestSmartRunner_NotifierIntegration(t *testing.T) {
 	registry := provider.NewRegistry()
 	runner := NewRunner(registry)
 	notifier := &mockNotifier{}
-	
+
 	sr := NewSmartRunner(runner, SmartRunnerOptions{
 		Notifier: notifier,
 	})
-	
+
 	// Test notifyHandoff
 	sr.notifyHandoff("profile1", "profile2")
-	
+
 	if len(notifier.alerts) != 1 {
 		t.Fatalf("expected 1 alert, got %d", len(notifier.alerts))
 	}
@@ -194,14 +212,14 @@ func TestSmartRunner_FailWithManual(t *testing.T) {
 	registry := provider.NewRegistry()
 	runner := NewRunner(registry)
 	notifier := &mockNotifier{}
-	
+
 	sr := NewSmartRunner(runner, SmartRunnerOptions{
 		Notifier: notifier,
 	})
 	sr.currentProfile = "test-profile"
-	
+
 	sr.failWithManual("test error: %s", "details")
-	
+
 	if sr.state != HandoffFailed {
 		t.Errorf("state = %v, want %v", sr.state, HandoffFailed)
 	}
@@ -217,11 +235,11 @@ func TestSmartRunner_WithRotation(t *testing.T) {
 	registry := provider.NewRegistry()
 	runner := NewRunner(registry)
 	selector := rotation.NewSelector(rotation.AlgorithmSmart, nil, nil)
-	
+
 	sr := NewSmartRunner(runner, SmartRunnerOptions{
 		Rotation: selector,
 	})
-	
+
 	if sr.rotation != selector {
 		t.Error("rotation selector not set correctly")
 	}

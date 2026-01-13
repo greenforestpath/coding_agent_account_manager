@@ -87,9 +87,10 @@ This is useful for first-run experience to discover and import existing credenti
 
 		if len(args) > 0 {
 			// Check specific provider
-			p, ok := registry.Get(args[0])
+			tool := strings.ToLower(args[0])
+			p, ok := registry.Get(tool)
 			if !ok {
-				return fmt.Errorf("unknown tool: %s (supported: claude, codex, gemini)", args[0])
+				return fmt.Errorf("unknown tool: %s (supported: claude, codex, gemini)", tool)
 			}
 			providersToCheck = append(providersToCheck, p)
 		} else {
@@ -368,7 +369,7 @@ func formatFileSize(bytes int64) string {
 
 // runAuthImport implements the auth import command.
 func runAuthImport(cmd *cobra.Command, args []string) error {
-	tool := args[0]
+	tool := strings.ToLower(args[0])
 	name, _ := cmd.Flags().GetString("name")
 	description, _ := cmd.Flags().GetString("description")
 	force, _ := cmd.Flags().GetBool("force")

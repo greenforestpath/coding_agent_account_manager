@@ -334,14 +334,15 @@ func (t *SessionTracker) MergeLogData(logEntries []*logs.LogEntry) int {
 	defer t.mu.Unlock()
 
 	// Build lookup for existing entries
-	existingByMsgID := make(map[string]int) // message_id -> index
-	existingByTime := make(map[int64]int)   // unix_nano -> index
+	existingByMsgID := make(map[string]int)   // message_id -> index
+	existingBySecond := make(map[int64][]int) // unix_second -> indices
 
 	for i, e := range t.entries {
 		if e.MessageID != "" {
 			existingByMsgID[e.MessageID] = i
 		}
-		existingByTime[e.Timestamp.UnixNano()] = i
+		sec := e.Timestamp.Unix()
+		existingBySecond[sec] = append(existingBySecond[sec], i)
 	}
 
 	added := 0
@@ -372,9 +373,25 @@ func (t *SessionTracker) MergeLogData(logEntries []*logs.LogEntry) int {
 
 		// Check for duplicate by timestamp (within 1 second tolerance)
 		found := false
-		for nano := le.Timestamp.UnixNano() - int64(time.Second); nano <= le.Timestamp.UnixNano()+int64(time.Second); nano++ {
-			if _, exists := existingByTime[nano]; exists {
-				found = true
+		sec := le.Timestamp.Unix()
+		for _, candidate := range []int64{sec - 1, sec, sec + 1} {
+			if indices, ok := existingBySecond[candidate]; ok {
+				for _, idx := range indices {
+					if idx < 0 || idx >= len(t.entries) {
+						continue
+					}
+					existing := t.entries[idx]
+					delta := existing.Timestamp.Sub(le.Timestamp)
+					if delta < 0 {
+						delta = -delta
+					}
+					if delta <= time.Second {
+						found = true
+						break
+					}
+				}
+			}
+			if found {
 				break
 			}
 		}
@@ -404,7 +421,8 @@ func (t *SessionTracker) MergeLogData(logEntries []*logs.LogEntry) int {
 		if entry.MessageID != "" {
 			existingByMsgID[entry.MessageID] = len(t.entries) - 1
 		}
-		existingByTime[entry.Timestamp.UnixNano()] = len(t.entries) - 1
+		sec = entry.Timestamp.Unix()
+		existingBySecond[sec] = append(existingBySecond[sec], len(t.entries)-1)
 	}
 
 	return added

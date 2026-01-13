@@ -568,30 +568,17 @@ func createDirectories(quiet bool) error {
 		fmt.Println("Creating directories...")
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("get home dir: %w", err)
-	}
-
-	// Determine paths using XDG conventions
-	xdgData := os.Getenv("XDG_DATA_HOME")
-	if xdgData == "" {
-		xdgData = filepath.Join(homeDir, ".local", "share")
-	}
-
-	xdgConfig := os.Getenv("XDG_CONFIG_HOME")
-	if xdgConfig == "" {
-		xdgConfig = filepath.Join(homeDir, ".config")
-	}
+	dataDir := config.DefaultDataPath()
+	configDir := filepath.Dir(config.ConfigPath())
 
 	dirs := []struct {
 		path string
 		name string
 	}{
-		{filepath.Join(xdgData, "caam"), "caam data directory"},
+		{dataDir, "caam data directory"},
 		{authfile.DefaultVaultPath(), "vault directory"},
 		{profile.DefaultStorePath(), "profiles directory"},
-		{filepath.Join(xdgConfig, "caam"), "config directory"},
+		{configDir, "config directory"},
 	}
 
 	for _, dir := range dirs {

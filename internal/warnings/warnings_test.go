@@ -377,6 +377,38 @@ func TestCheckerCheckAllWithProfiles(t *testing.T) {
 	}
 }
 
+func TestCheckerCheckAllSkipsSystemProfiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	// Create a system profile with an expiring token
+	profilePath := vault.ProfilePath("claude", "_original")
+	if err := os.MkdirAll(profilePath, 0700); err != nil {
+		t.Fatalf("failed to create profile dir: %v", err)
+	}
+
+	expiresAt := time.Now().Add(30 * time.Minute).UnixMilli()
+	creds := map[string]interface{}{
+		"claudeAiOauth": map[string]interface{}{
+			"accessToken": "fake-token",
+			"expiresAt":   expiresAt,
+		},
+	}
+	credsData, _ := json.Marshal(creds)
+	if err := os.WriteFile(filepath.Join(profilePath, ".credentials.json"), credsData, 0600); err != nil {
+		t.Fatalf("failed to write credentials: %v", err)
+	}
+
+	checker := NewChecker(vault, nil, nil)
+	warnings := checker.CheckAll(context.Background())
+
+	for _, w := range warnings {
+		if w.Tool == "claude" && w.Profile == "_original" {
+			t.Error("CheckAll() should skip system profiles")
+		}
+	}
+}
+
 func TestCheckerCheckAllExpiredToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	vault := authfile.NewVault(tmpDir)

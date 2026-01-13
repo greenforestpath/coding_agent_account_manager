@@ -110,8 +110,8 @@ func (s *Selector) SetUsageData(usage map[string]*UsageInfo) {
 // Select chooses a profile from the given list using the configured algorithm.
 // Returns an error if no profiles are available or all are in cooldown.
 func (s *Selector) Select(tool string, profiles []string, currentProfile string) (*Result, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if len(profiles) == 0 {
 		return nil, fmt.Errorf("no profiles available for %s", tool)

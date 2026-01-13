@@ -4,14 +4,15 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/bundle"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
+	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
+	syncstate "github.com/Dicklesworthstone/coding_agent_account_manager/internal/sync"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -135,13 +136,12 @@ func runBundleImport(cmd *cobra.Command, args []string) error {
 
 	// Set paths
 	vaultPath := authfile.DefaultVaultPath()
-	dataPath := filepath.Dir(vaultPath)
 	opts.VaultPath = vaultPath
 	opts.ConfigPath = config.ConfigPath()
 	opts.ProjectsPath = project.DefaultPath()
 	opts.HealthPath = health.DefaultHealthPath()
-	opts.DatabasePath = filepath.Join(dataPath, "caam.db")
-	opts.SyncPath = filepath.Join(dataPath, "sync")
+	opts.DatabasePath = caamdb.DefaultPath()
+	opts.SyncPath = syncstate.SyncDataDir()
 
 	// Create importer
 	importer := &bundle.VaultImporter{

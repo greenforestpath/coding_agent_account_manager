@@ -23,7 +23,7 @@ func TestNewGeminiScanner(t *testing.T) {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	expected := filepath.Join(homeDir, ".config", "gemini", "logs")
+	expected := filepath.Join(homeDir, ".gemini", "logs")
 	if scanner.LogDir() != expected {
 		t.Errorf("LogDir() = %q, want %q", scanner.LogDir(), expected)
 	}

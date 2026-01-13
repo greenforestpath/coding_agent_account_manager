@@ -706,6 +706,10 @@ func copyFile(src, dst string) error {
 	}
 	defer srcFile.Close()
 
+	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+		return err
+	}
+
 	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
@@ -760,7 +764,50 @@ func (i *VaultImporter) importOptionalFiles(bundleDir string, manifest *Manifest
 	// Health
 	if manifest.Contents.Health.Included && !opts.SkipHealth && opts.HealthPath != "" {
 		srcPath := filepath.Join(bundleDir, manifest.Contents.Health.Path)
-		if err := copyDirectory(srcPath, opts.HealthPath); err != nil {
+		info, err := os.Stat(srcPath)
+		if err != nil {
+			result.OptionalActions = append(result.OptionalActions, OptionalAction{
+				Name:   "health",
+				Action: "error",
+				Reason: err.Error(),
+			})
+		} else if info.IsDir() {
+			destLooksLikeFile := strings.EqualFold(filepath.Ext(opts.HealthPath), ".json")
+			if destLooksLikeFile {
+				expected := filepath.Join(srcPath, "health.json")
+				if _, err := os.Stat(expected); err != nil {
+					result.OptionalActions = append(result.OptionalActions, OptionalAction{
+						Name:   "health",
+						Action: "error",
+						Reason: fmt.Sprintf("expected health.json in bundle health directory: %v", err),
+					})
+				} else if err := copyFile(expected, opts.HealthPath); err != nil {
+					result.OptionalActions = append(result.OptionalActions, OptionalAction{
+						Name:   "health",
+						Action: "error",
+						Reason: err.Error(),
+					})
+				} else {
+					result.OptionalActions = append(result.OptionalActions, OptionalAction{
+						Name:   "health",
+						Action: "import",
+						Reason: "imported successfully",
+					})
+				}
+			} else if err := copyDirectory(srcPath, opts.HealthPath); err != nil {
+				result.OptionalActions = append(result.OptionalActions, OptionalAction{
+					Name:   "health",
+					Action: "error",
+					Reason: err.Error(),
+				})
+			} else {
+				result.OptionalActions = append(result.OptionalActions, OptionalAction{
+					Name:   "health",
+					Action: "import",
+					Reason: "imported successfully",
+				})
+			}
+		} else if err := copyFile(srcPath, opts.HealthPath); err != nil {
 			result.OptionalActions = append(result.OptionalActions, OptionalAction{
 				Name:   "health",
 				Action: "error",

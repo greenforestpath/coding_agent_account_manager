@@ -263,6 +263,56 @@ func TestUsageInfo_TimeUntilReset(t *testing.T) {
 	}
 }
 
+func TestMultiProfileFetcher_NilFetcherDoesNotPanic(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var m *MultiProfileFetcher
+		results := m.FetchAllProfiles(context.Background(), "claude", map[string]string{
+			"work": "token",
+		})
+		if len(results) != 1 {
+			t.Fatalf("results len = %d, want 1", len(results))
+		}
+		if results[0].Usage == nil {
+			t.Fatal("results[0].Usage is nil")
+		}
+		if results[0].Usage.Error == "" {
+			t.Fatal("results[0].Usage.Error is empty, want error")
+		}
+	})
+
+	t.Run("claude nil fetcher", func(t *testing.T) {
+		m := &MultiProfileFetcher{}
+		results := m.FetchAllProfiles(context.Background(), "claude", map[string]string{
+			"work": "token",
+		})
+		if len(results) != 1 {
+			t.Fatalf("results len = %d, want 1", len(results))
+		}
+		if results[0].Usage == nil {
+			t.Fatal("results[0].Usage is nil")
+		}
+		if results[0].Usage.Error == "" {
+			t.Fatal("results[0].Usage.Error is empty, want error")
+		}
+	})
+
+	t.Run("codex nil fetcher", func(t *testing.T) {
+		m := &MultiProfileFetcher{}
+		results := m.FetchAllProfiles(context.Background(), "codex", map[string]string{
+			"work": "token",
+		})
+		if len(results) != 1 {
+			t.Fatalf("results len = %d, want 1", len(results))
+		}
+		if results[0].Usage == nil {
+			t.Fatal("results[0].Usage is nil")
+		}
+		if results[0].Usage.Error == "" {
+			t.Fatal("results[0].Usage.Error is empty, want error")
+		}
+	})
+}
+
 func TestCodexFetcher_Fetch_BalanceParsing(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -404,6 +454,20 @@ func TestReadClaudeCredentials(t *testing.T) {
 		t.Fatalf("write legacy.json: %v", err)
 	}
 
+	objectPath := filepath.Join(tmpDir, "legacy_object.json")
+	objectContent := `{"oauthToken":{"access_token":"tok-object"}}`
+	if err := os.WriteFile(objectPath, []byte(objectContent), 0600); err != nil {
+		t.Fatalf("write legacy_object.json: %v", err)
+	}
+
+	token, account, err = ReadClaudeCredentials(objectPath)
+	if err != nil {
+		t.Fatalf("ReadClaudeCredentials legacy object error: %v", err)
+	}
+	if token != "tok-object" || account != "" {
+		t.Fatalf("unexpected legacy object token/account: %q/%q", token, account)
+	}
+
 	token, account, err = ReadClaudeCredentials(legacyPath)
 	if err != nil {
 		t.Fatalf("ReadClaudeCredentials legacy error: %v", err)
@@ -442,6 +506,20 @@ func TestReadCodexCredentials(t *testing.T) {
 	}
 	if token != "nested-token" || account != "acct-2" {
 		t.Fatalf("unexpected tokens token/account: %q/%q", token, account)
+	}
+
+	apiKeyPath := filepath.Join(tmpDir, "auth_api_key.json")
+	apiKeyContent := `{"OPENAI_API_KEY":"sk-test"}`
+	if err := os.WriteFile(apiKeyPath, []byte(apiKeyContent), 0600); err != nil {
+		t.Fatalf("write auth_api_key.json: %v", err)
+	}
+
+	token, account, err = ReadCodexCredentials(apiKeyPath)
+	if err == nil {
+		t.Fatal("ReadCodexCredentials api key expected error, got nil")
+	}
+	if token != "" || account != "" {
+		t.Fatalf("unexpected api key token/account: %q/%q", token, account)
 	}
 }
 

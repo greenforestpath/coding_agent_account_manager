@@ -12,8 +12,10 @@ import (
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/bundle"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
+	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
+	syncstate "github.com/Dicklesworthstone/coding_agent_account_manager/internal/sync"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -178,6 +180,8 @@ func runBundleExport(cmd *cobra.Command, args []string) error {
 		ConfigPath:   config.ConfigPath(),
 		ProjectsPath: project.DefaultPath(),
 		HealthPath:   health.DefaultHealthPath(),
+		DatabasePath: caamdb.DefaultPath(),
+		SyncPath:     syncstate.SyncDataDir(),
 	}
 
 	// Preview mode

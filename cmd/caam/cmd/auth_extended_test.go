@@ -195,7 +195,13 @@ func TestAuthCommands_Extended(t *testing.T) {
 	assert.True(t, claudeRes.Found)
 	assert.NotNil(t, claudeRes.Primary)
 	assert.Equal(t, "/home/user/.claude.json", claudeRes.Primary.Path)
-	
+
+	// Mixed-case provider should resolve
+	_, err = captureStdout(t, func() error {
+		return authDetectCmd.RunE(authDetectCmd, []string{"ClAuDe"})
+	})
+	require.NoError(t, err)
+
 	h.EndStep("Detect")
 	
 	// 3. Test Auth Import
@@ -230,7 +236,14 @@ func TestAuthCommands_Extended(t *testing.T) {
 	// Verify mock calls
 	assert.True(t, mockClaude.calledPrepare)
 	assert.True(t, mockClaude.calledImport)
-	
+
+	// Mixed-case provider should import
+	authImportCmd.Flags().Set("name", "mixed")
+	_, err = captureStdout(t, func() error {
+		return authImportCmd.RunE(authImportCmd, []string{"ClAuDe"})
+	})
+	require.NoError(t, err)
+
 	h.EndStep("Import")
 	
 	// 4. Test Auth Import with Source

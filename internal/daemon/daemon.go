@@ -84,6 +84,8 @@ type Daemon struct {
 	mu      sync.Mutex
 	running bool
 	stats   Stats
+
+	configMu sync.RWMutex // Protects config access during runtime reloads
 }
 
 // Stats tracks daemon activity.
@@ -106,6 +108,27 @@ type Stats struct {
 	PoolEnabled       bool
 	PoolMonitorActive bool
 	PoolSummary       *authpool.PoolSummary
+}
+
+// getCheckInterval returns the check interval with proper locking.
+func (d *Daemon) getCheckInterval() time.Duration {
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	return d.config.CheckInterval
+}
+
+// getRefreshThreshold returns the refresh threshold with proper locking.
+func (d *Daemon) getRefreshThreshold() time.Duration {
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	return d.config.RefreshThreshold
+}
+
+// isVerbose returns the verbose setting with proper locking.
+func (d *Daemon) isVerbose() bool {
+	d.configMu.RLock()
+	defer d.configMu.RUnlock()
+	return d.config.Verbose
 }
 
 // New creates a new daemon instance.
@@ -156,7 +179,7 @@ func (d *Daemon) initAuthPool() {
 		authpool.WithVault(d.vault),
 		authpool.WithRefreshThreshold(d.config.RefreshThreshold),
 		authpool.WithOnStateChange(func(profile *authpool.PooledProfile, oldStatus, newStatus authpool.PoolStatus) {
-			if d.config.Verbose {
+			if d.isVerbose() {
 				d.logger.Printf("Pool: %s/%s status changed: %s -> %s",
 					profile.Provider, profile.ProfileName, oldStatus, newStatus)
 			}
@@ -183,7 +206,7 @@ func (d *Daemon) initAuthPool() {
 		RefreshThreshold: d.config.RefreshThreshold,
 		MaxConcurrent:    maxConcurrent,
 		OnRefreshStart: func(provider, profile string) {
-			if d.config.Verbose {
+			if d.isVerbose() {
 				d.logger.Printf("Pool: starting refresh for %s/%s", provider, profile)
 			}
 		},
@@ -196,7 +219,7 @@ func (d *Daemon) initAuthPool() {
 			} else {
 				d.stats.RefreshCount++
 				d.mu.Unlock()
-				if d.config.Verbose {
+				if d.isVerbose() {
 					d.logger.Printf("Pool: %s/%s refreshed, expires %v",
 						provider, profile, newExpiry.Format(time.RFC3339))
 				}
@@ -273,26 +296,25 @@ func (d *Daemon) Start() error {
 
 // ReloadConfig reloads the configuration from disk.
 func (d *Daemon) ReloadConfig() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// Load global config
 	globalCfg, err := config.LoadSPMConfig()
 	if err != nil {
 		d.logger.Printf("Error reloading config: %v", err)
 		return
 	}
-	
+
 	// Check if reload is enabled
 	if !globalCfg.Runtime.ReloadOnSIGHUP {
 		d.logger.Println("Reload on SIGHUP is disabled in config")
 		return
 	}
-	
-	// Apply updates
+
+	// Apply updates with proper locking
+	d.configMu.Lock()
 	d.config.Verbose = globalCfg.Daemon.Verbose
 	d.config.CheckInterval = globalCfg.Daemon.CheckInterval.Duration()
 	d.config.RefreshThreshold = globalCfg.Daemon.RefreshThreshold.Duration()
+	d.configMu.Unlock()
 
 	d.logger.Println("Config reloaded (runtime settings applied)")
 	
@@ -421,9 +443,7 @@ func (d *Daemon) runLoop() {
 	}
 	d.checkAndBackup()
 
-	d.mu.Lock()
-	interval := d.config.CheckInterval
-	d.mu.Unlock()
+	interval := d.getCheckInterval()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -433,9 +453,7 @@ func (d *Daemon) runLoop() {
 		case <-d.ctx.Done():
 			return
 		case <-d.configChanged:
-			d.mu.Lock()
-			newInterval := d.config.CheckInterval
-			d.mu.Unlock()
+			newInterval := d.getCheckInterval()
 			if newInterval != interval {
 				interval = newInterval
 				ticker.Reset(interval)
@@ -519,7 +537,7 @@ func (d *Daemon) checkAndBackup() {
 	}
 
 	if !d.backupScheduler.ShouldBackup() {
-		if d.config.Verbose {
+		if d.isVerbose() {
 			next := d.backupScheduler.NextBackupTime()
 			if !next.IsZero() {
 				d.logger.Printf("Next backup scheduled for %v", next.Format(time.RFC3339))
@@ -549,7 +567,7 @@ func (d *Daemon) checkAndRefresh() {
 	d.stats.CheckCount++
 	d.mu.Unlock()
 
-	if d.config.Verbose {
+	if d.isVerbose() {
 		d.logger.Println("Checking profiles for refresh...")
 	}
 
@@ -563,7 +581,7 @@ func (d *Daemon) checkAndRefresh() {
 	for _, provider := range providers {
 		profiles, err := d.vault.List(provider)
 		if err != nil {
-			if d.config.Verbose {
+			if d.isVerbose() {
 				d.logger.Printf("Could not list %s profiles: %v", provider, err)
 			}
 			continue
@@ -587,7 +605,7 @@ func (d *Daemon) checkAndRefresh() {
 	d.stats.ProfilesChecked += totalChecked
 	d.mu.Unlock()
 
-	if d.config.Verbose {
+	if d.isVerbose() {
 		d.logger.Printf("Checked %d profiles", totalChecked)
 	}
 }
@@ -601,8 +619,8 @@ func (d *Daemon) checkProfile(provider, profile string) {
 	}
 
 	// Check if refresh is needed
-	if !refresh.ShouldRefresh(ph, d.config.RefreshThreshold) {
-		if d.config.Verbose && !ph.TokenExpiresAt.IsZero() {
+	if !refresh.ShouldRefresh(ph, d.getRefreshThreshold()) {
+		if d.isVerbose() && !ph.TokenExpiresAt.IsZero() {
 			ttl := time.Until(ph.TokenExpiresAt)
 			d.logger.Printf("%s/%s: token OK (expires in %v)", provider, profile, ttl.Round(time.Minute))
 		}
@@ -625,7 +643,7 @@ func (d *Daemon) checkProfile(provider, profile string) {
 		// Don't log unsupported errors as failures
 		var unsupErr *refresh.UnsupportedError
 		if ok := isUnsupportedError(err, &unsupErr); ok {
-			if d.config.Verbose {
+			if d.isVerbose() {
 				d.logger.Printf("%s/%s: refresh not supported (%s)", provider, profile, unsupErr.Reason)
 			}
 		} else {

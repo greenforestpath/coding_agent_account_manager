@@ -152,6 +152,15 @@ func TestBackupScheduler_TimeUntilNextBackup(t *testing.T) {
 func TestBackupScheduler_StatePersistence(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	oldCaamHome := os.Getenv("CAAM_HOME")
+	oldXDGData := os.Getenv("XDG_DATA_HOME")
+	os.Setenv("CAAM_HOME", tmpDir)
+	os.Unsetenv("XDG_DATA_HOME")
+	defer func() {
+		os.Setenv("CAAM_HOME", oldCaamHome)
+		os.Setenv("XDG_DATA_HOME", oldXDGData)
+	}()
+
 	cfg := &config.BackupConfig{
 		Enabled:  true,
 		Interval: config.Duration(24 * time.Hour),
@@ -163,10 +172,6 @@ func TestBackupScheduler_StatePersistence(t *testing.T) {
 	scheduler.state.LastBackup = time.Now().Add(-1 * time.Hour)
 	scheduler.state.LastBackupPath = "/test/backup.tar.gz"
 	scheduler.state.BackupCount = 5
-
-	// Override state path for testing
-	statePath := filepath.Join(tmpDir, "backup_state.json")
-	os.MkdirAll(filepath.Dir(statePath), 0700)
 
 	// Save state
 	if err := scheduler.SaveState(); err != nil {
@@ -388,6 +393,7 @@ func TestBackupScheduler_LoadState_InvalidJSON(t *testing.T) {
 	scheduler := NewBackupScheduler(cfg, filepath.Join(tmpDir, "vault"), newTestLogger())
 
 	// Create invalid JSON file
+	t.Setenv("CAAM_HOME", "")
 	stateDir := filepath.Join(config.DefaultDataPath())
 	os.MkdirAll(stateDir, 0700)
 	statePath := filepath.Join(stateDir, "backup_state.json")

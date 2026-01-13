@@ -51,6 +51,9 @@ type SmartRunner struct {
 	handoffCount    int
 	state           HandoffState
 
+	// WaitGroup to track background goroutines (handleRateLimit)
+	wg sync.WaitGroup
+
 	// Login detection channel
 	loginDone chan loginResult
 }
@@ -130,7 +133,7 @@ func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) error {
 	// Build command
 	bin := opts.Provider.DefaultBin()
 	cmd := ExecCommand(ctx, bin, opts.Args...)
-	
+
 	// Apply env (same as Runner.Run)
 	envMap := make(map[string]string)
 	for _, e := range os.Environ() {
@@ -169,10 +172,16 @@ func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) error {
 	// Start output monitoring in background
 	monitorCtx, cancelMonitor := context.WithCancel(ctx)
 	defer cancelMonitor()
-	go r.monitorOutput(monitorCtx, ctrl)
+	monitorDone := make(chan struct{})
+	go r.monitorOutput(monitorCtx, ctrl, monitorDone)
 
 	// Wait for command completion using the controller's Wait method
 	exitCode, waitErr := ctrl.Wait()
+
+	// Cancel monitor context, wait for monitor to stop, then wait for any handoff goroutines.
+	cancelMonitor()
+	<-monitorDone
+	r.wg.Wait()
 
 	// Update profile metadata
 	opts.Profile.LastUsedAt = time.Now()
@@ -218,14 +227,14 @@ func (r *SmartRunner) handleRateLimit(ctx context.Context) {
 	}
 
 	defer func() {
-		if r.state == HandoffFailed {
+		if r.getState() == HandoffFailed {
 			r.rollback(fileSet)
 		}
 	}()
 
 	// 2. Select best backup profile
 	r.setState(SelectingBackup)
-	
+
 	// Get all profiles
 	profiles, err := r.vault.List(r.loginHandler.Provider())
 	if err != nil {
@@ -265,6 +274,7 @@ func (r *SmartRunner) handleRateLimit(ctx context.Context) {
 	}
 
 	// 5. Inject login command
+	r.drainLoginDone()
 	r.setState(LoggingIn)
 	if err := r.loginHandler.TriggerLogin(r.ptyController); err != nil {
 		r.failWithManual("login trigger failed: %v", err)
@@ -323,14 +333,14 @@ func (r *SmartRunner) rollback(fileSet authfile.AuthFileSet) {
 func (r *SmartRunner) failWithManual(format string, args ...interface{}) {
 	r.setState(HandoffFailed)
 	msg := fmt.Sprintf(format, args...)
-	
+
 	r.notifier.Notify(&notify.Alert{
 		Level:   notify.Warning,
 		Title:   "Auto-handoff failed",
 		Message: msg,
 		Action:  "Run 'caam ls' to see available profiles, then 'caam activate <profile>'",
 	})
-	
+
 	fmt.Fprintf(os.Stderr, "\n[caam] Auto-handoff failed: %s\n", msg)
 }
 
@@ -352,16 +362,38 @@ func (r *SmartRunner) setState(s HandoffState) {
 	r.mu.Unlock()
 }
 
-func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller) {
+func (r *SmartRunner) getState() HandoffState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state
+}
+
+func (r *SmartRunner) drainLoginDone() {
+	for {
+		select {
+		case <-r.loginDone:
+			continue
+		default:
+			return
+		}
+	}
+}
+
+func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller, done chan<- struct{}) {
+	defer close(done)
 	// Create an observing writer to handle split packets and buffering
 	// Use a local flag to prevent repeated dispatching within this loop context
 	dispatched := false
-	
+
 	writer := ratelimit.NewObservingWriter(r.detector, func(line string) {
 		// This callback is triggered when a complete line is processed
 		if !dispatched && r.detector.Detected() {
 			dispatched = true
-			go r.handleRateLimit(ctx)
+			r.wg.Add(1)
+			go func() {
+				defer r.wg.Done()
+				r.handleRateLimit(ctx)
+			}()
 		}
 	})
 
@@ -371,10 +403,10 @@ func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller) {
 		if err != nil {
 			break
 		}
-		
+
 		if output != "" {
 			os.Stdout.Write([]byte(output))
-			
+
 			r.mu.Lock()
 			state := r.state
 			r.mu.Unlock()
@@ -407,7 +439,7 @@ func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller) {
 				}
 			}
 		}
-		
+
 		select {
 		case <-ctx.Done():
 			return

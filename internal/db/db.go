@@ -46,6 +46,9 @@ func OpenAt(path string) (*DB, error) {
 		if renameErr := os.Rename(clean, backupPath); renameErr != nil {
 			return nil, fmt.Errorf("db appears corrupt (%v), and rename failed: %w", err, renameErr)
 		}
+		if sidecarErr := renameSQLiteSidecars(clean, backupPath); sidecarErr != nil {
+			return nil, fmt.Errorf("db appears corrupt (%v), and sidecar rename failed: %w", err, sidecarErr)
+		}
 	}
 
 	conn, err = openAndInit(clean)
@@ -60,6 +63,39 @@ func (d *DB) Close() error {
 		return nil
 	}
 	return d.conn.Close()
+}
+
+// Checkpoint performs a best-effort WAL checkpoint to flush data to the main DB file.
+// It does not run migrations and should be safe to call before file-based backups.
+func Checkpoint(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("path is a directory: %s", path)
+	}
+
+	conn, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		return fmt.Errorf("open sqlite: %w", err)
+	}
+	defer conn.Close()
+
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
+
+	if _, err := conn.Exec(`PRAGMA busy_timeout=5000;`); err != nil {
+		return fmt.Errorf("set busy_timeout: %w", err)
+	}
+	if _, err := conn.Exec(`PRAGMA wal_checkpoint(TRUNCATE);`); err != nil {
+		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+	return nil
 }
 
 func (d *DB) Conn() *sql.DB {
@@ -160,4 +196,20 @@ func isCorruptSQLiteError(err error) bool {
 	default:
 		return false
 	}
+}
+
+func renameSQLiteSidecars(path, backupPath string) error {
+	for _, suffix := range []string{"-wal", "-shm"} {
+		oldPath := path + suffix
+		if _, err := os.Stat(oldPath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", oldPath, err)
+		}
+		if err := os.Rename(oldPath, backupPath+suffix); err != nil {
+			return fmt.Errorf("rename %s: %w", oldPath, err)
+		}
+	}
+	return nil
 }

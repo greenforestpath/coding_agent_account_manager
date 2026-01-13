@@ -371,6 +371,39 @@ func TestSessionTracker_MergeLogData_UpdateEstimates(t *testing.T) {
 	}
 }
 
+func TestSessionTracker_MergeLogData_DedupByTimestamp(t *testing.T) {
+	tracker := NewSessionTracker()
+	now := time.Now()
+
+	// Existing entry without message ID
+	tracker.Record(TokenEntry{
+		Timestamp:   now.Add(-10 * time.Minute),
+		InputTokens: 100,
+		Source:      "api_response",
+	})
+
+	logEntries := []*logs.LogEntry{
+		// Within 1s of existing timestamp -> should be deduped
+		{
+			Timestamp:   now.Add(-10*time.Minute + 500*time.Millisecond),
+			InputTokens: 200,
+		},
+		// Outside 1s window -> should be added
+		{
+			Timestamp:   now.Add(-8 * time.Minute),
+			InputTokens: 300,
+		},
+	}
+
+	added := tracker.MergeLogData(logEntries)
+	if added != 1 {
+		t.Errorf("added = %d, expected 1", added)
+	}
+	if tracker.EntryCount() != 2 {
+		t.Errorf("EntryCount = %d, expected 2", tracker.EntryCount())
+	}
+}
+
 func TestSessionTracker_Snapshot(t *testing.T) {
 	tracker := NewSessionTracker()
 

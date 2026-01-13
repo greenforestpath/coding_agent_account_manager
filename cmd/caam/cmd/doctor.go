@@ -197,19 +197,15 @@ func checkCLITools() []CheckResult {
 func checkDirectories(fix bool) []CheckResult {
 	var results []CheckResult
 
-	homeDir, _ := os.UserHomeDir()
-	xdgData := os.Getenv("XDG_DATA_HOME")
-	if xdgData == "" {
-		xdgData = filepath.Join(homeDir, ".local", "share")
-	}
+	dataDir := config.DefaultDataPath()
 
 	dirs := []struct {
 		path string
 		name string
 	}{
-		{filepath.Join(xdgData, "caam"), "caam data directory"},
-		{filepath.Join(xdgData, "caam", "vault"), "vault directory"},
-		{filepath.Join(xdgData, "caam", "profiles"), "profiles directory"},
+		{dataDir, "caam data directory"},
+		{filepath.Join(dataDir, "vault"), "vault directory"},
+		{filepath.Join(dataDir, "profiles"), "profiles directory"},
 	}
 
 	for _, dir := range dirs {

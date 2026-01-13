@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 )
 
 // ExportOptions configures the export operation.
@@ -99,7 +101,7 @@ type VaultExporter struct {
 	// ProjectsPath is the path to projects.json.
 	ProjectsPath string
 
-	// HealthPath is the path to health data directory.
+	// HealthPath is the path to health data (file or directory).
 	HealthPath string
 
 	// DatabasePath is the path to caam.db.
@@ -418,9 +420,11 @@ func (e *VaultExporter) collectProjectFiles(manifest *ManifestV1) ([]fileEntry, 
 	// Count associations
 	count := 0
 	if data, err := os.ReadFile(e.ProjectsPath); err == nil {
-		var projects map[string]interface{}
+		var projects struct {
+			Associations map[string]map[string]string `json:"associations"`
+		}
 		if json.Unmarshal(data, &projects) == nil {
-			count = len(projects)
+			count = len(projects.Associations)
 		}
 	}
 
@@ -440,13 +444,27 @@ func (e *VaultExporter) collectHealthFiles(manifest *ManifestV1) ([]fileEntry, e
 		return nil, nil
 	}
 
-	if _, err := os.Stat(e.HealthPath); os.IsNotExist(err) {
+	info, err := os.Stat(e.HealthPath)
+	if os.IsNotExist(err) {
 		manifest.SetHealth(false, "")
 		return nil, nil
 	}
+	if err != nil {
+		manifest.SetHealth(false, "")
+		return nil, err
+	}
+
+	if !info.IsDir() {
+		relPath := "health.json"
+		manifest.SetHealth(true, relPath)
+		return []fileEntry{{
+			SrcPath: e.HealthPath,
+			RelPath: relPath,
+		}}, nil
+	}
 
 	var files []fileEntry
-	err := filepath.WalkDir(e.HealthPath, func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(e.HealthPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !d.Type().IsRegular() {
 			return err
 		}
@@ -487,6 +505,9 @@ func (e *VaultExporter) collectDatabaseFiles(manifest *ManifestV1) ([]fileEntry,
 
 	relPath := "caam.db"
 	manifest.SetDatabase(true, relPath)
+	if err := caamdb.Checkpoint(e.DatabasePath); err != nil {
+		manifest.Contents.Database.Note = fmt.Sprintf("wal checkpoint failed: %v", err)
+	}
 
 	return []fileEntry{{
 		SrcPath: e.DatabasePath,
@@ -678,10 +699,11 @@ func createZipFromDir(srcDir, zipPath string) error {
 		if err != nil {
 			return err
 		}
-		defer file.Close()
-
-		_, err = io.Copy(writer, file)
-		return err
+		_, copyErr := io.Copy(writer, file)
+		if closeErr := file.Close(); closeErr != nil && copyErr == nil {
+			return closeErr
+		}
+		return copyErr
 	})
 }
 

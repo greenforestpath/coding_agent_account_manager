@@ -86,6 +86,10 @@ Run 'caam' without arguments to launch the interactive TUI.`,
 		return tui.Run()
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if _, err := config.MigrateDataToCAAMHome(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: data migration skipped: %v\n", err)
+		}
+
 		// Initialize vault
 		vault = authfile.NewVault(authfile.DefaultVaultPath())
 
@@ -528,7 +532,8 @@ Use this after logging in to an account through the tool's normal login flow:
   1. Run: codex login (or claude with /login, or gemini)
   2. Run: caam backup codex my-gptpro-account-1
 
-The auth files are copied to ~/.local/share/caam/vault/<tool>/<profile>/
+The auth files are copied to $CAAM_HOME/data/vault/<tool>/<profile>/ (if CAAM_HOME is set)
+or ~/.local/share/caam/vault/<tool>/<profile>/
 
 Examples:
   caam backup codex work-account

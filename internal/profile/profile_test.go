@@ -748,13 +748,24 @@ func TestStoreExists(t *testing.T) {
 // =============================================================================
 
 func TestDefaultStorePath(t *testing.T) {
+	originalCaamHome := os.Getenv("CAAM_HOME")
 	// Test with XDG_DATA_HOME set
 	originalXDG := os.Getenv("XDG_DATA_HOME")
+	defer os.Setenv("CAAM_HOME", originalCaamHome)
 	defer os.Setenv("XDG_DATA_HOME", originalXDG)
 
+	os.Setenv("CAAM_HOME", "/custom/caam")
 	os.Setenv("XDG_DATA_HOME", "/custom/data")
 	path := DefaultStorePath()
-	expected := "/custom/data/caam/profiles"
+	expected := "/custom/caam/data/profiles"
+	if path != expected {
+		t.Errorf("DefaultStorePath() with CAAM_HOME = %q, want %q", path, expected)
+	}
+
+	os.Unsetenv("CAAM_HOME")
+	os.Setenv("XDG_DATA_HOME", "/custom/data")
+	path = DefaultStorePath()
+	expected = "/custom/data/caam/profiles"
 	if path != expected {
 		t.Errorf("DefaultStorePath() with XDG = %q, want %q", path, expected)
 	}
@@ -1003,13 +1014,13 @@ func TestValidateTag(t *testing.T) {
 		{"project-x", false},
 		{"testing123", false},
 		{"my-long-tag-name", false},
-		{"", true},                          // Empty
-		{"   ", true},                        // Whitespace only
-		{"Work", true},                       // Uppercase
-		{"PROJECT", true},                    // All uppercase
-		{"project_x", true},                  // Underscore not allowed
-		{"project.x", true},                  // Period not allowed
-		{"project x", true},                  // Space not allowed
+		{"", true},          // Empty
+		{"   ", true},       // Whitespace only
+		{"Work", true},      // Uppercase
+		{"PROJECT", true},   // All uppercase
+		{"project_x", true}, // Underscore not allowed
+		{"project.x", true}, // Period not allowed
+		{"project x", true}, // Space not allowed
 		{"abcdefghijklmnopqrstuvwxyz0123456789", true}, // Too long (36 chars)
 	}
 

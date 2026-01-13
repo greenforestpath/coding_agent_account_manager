@@ -406,6 +406,9 @@ func NewStore(basePath string) *Store {
 // DefaultStorePath returns the default profiles directory.
 // Falls back to current directory if home directory cannot be determined.
 func DefaultStorePath() string {
+	if caamHome := os.Getenv("CAAM_HOME"); caamHome != "" {
+		return filepath.Join(caamHome, "data", "profiles")
+	}
 	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
 		return filepath.Join(xdgData, "caam", "profiles")
 	}

@@ -8,10 +8,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/bundle"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
+	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/project"
+	syncstate "github.com/Dicklesworthstone/coding_agent_account_manager/internal/sync"
 )
 
 // BackupState tracks the state of automatic backups.
@@ -37,6 +42,7 @@ type BackupScheduler struct {
 	config *config.BackupConfig
 	vault  string // Path to the vault to backup
 	state  BackupState
+	mu     sync.RWMutex // Protects state
 	logger interface {
 		Printf(format string, v ...interface{})
 		Println(v ...interface{})
@@ -66,6 +72,8 @@ func (s *BackupScheduler) LoadState() error {
 		return fmt.Errorf("read backup state: %w", err)
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := json.Unmarshal(data, &s.state); err != nil {
 		return fmt.Errorf("parse backup state: %w", err)
 	}
@@ -82,7 +90,9 @@ func (s *BackupScheduler) SaveState() error {
 		return fmt.Errorf("create backup state dir: %w", err)
 	}
 
+	s.mu.RLock()
 	data, err := json.MarshalIndent(s.state, "", "  ")
+	s.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal backup state: %w", err)
 	}
@@ -130,13 +140,17 @@ func (s *BackupScheduler) ShouldBackup() bool {
 		return false
 	}
 
+	s.mu.RLock()
+	lastBackup := s.state.LastBackup
+	s.mu.RUnlock()
+
 	// No previous backup - should create one
-	if s.state.LastBackup.IsZero() {
+	if lastBackup.IsZero() {
 		return true
 	}
 
 	// Check if interval has elapsed
-	elapsed := time.Since(s.state.LastBackup)
+	elapsed := time.Since(lastBackup)
 	return elapsed >= s.config.GetInterval()
 }
 
@@ -147,11 +161,15 @@ func (s *BackupScheduler) NextBackupTime() time.Time {
 		return time.Time{}
 	}
 
-	if s.state.LastBackup.IsZero() {
+	s.mu.RLock()
+	lastBackup := s.state.LastBackup
+	s.mu.RUnlock()
+
+	if lastBackup.IsZero() {
 		return time.Now() // Immediately
 	}
 
-	return s.state.LastBackup.Add(s.config.GetInterval())
+	return lastBackup.Add(s.config.GetInterval())
 }
 
 // TimeUntilNextBackup returns the duration until the next backup.
@@ -194,10 +212,10 @@ func (s *BackupScheduler) CreateBackup() (string, error) {
 		VaultPath:    s.vault,
 		DataPath:     config.DefaultDataPath(),
 		ConfigPath:   config.ConfigPath(),
-		ProjectsPath: filepath.Join(config.DefaultDataPath(), "projects.json"),
-		HealthPath:   filepath.Join(config.DefaultDataPath(), "health"),
-		DatabasePath: filepath.Join(config.DefaultDataPath(), "caam.db"),
-		SyncPath:     filepath.Join(config.DefaultDataPath(), "sync"),
+		ProjectsPath: project.DefaultPath(),
+		HealthPath:   health.DefaultHealthPath(),
+		DatabasePath: caamdb.DefaultPath(),
+		SyncPath:     syncstate.SyncDataDir(),
 	}
 
 	opts := bundle.DefaultExportOptions()
@@ -217,11 +235,13 @@ func (s *BackupScheduler) CreateBackup() (string, error) {
 	backupPath := result.OutputPath
 
 	// Update state
+	s.mu.Lock()
 	s.state.LastBackup = time.Now()
 	s.state.LastBackupPath = backupPath
 	s.state.BackupCount++
 	s.state.LastError = ""
 	s.state.LastErrorTime = time.Time{}
+	s.mu.Unlock()
 
 	if err := s.SaveState(); err != nil {
 		s.logger.Printf("Warning: failed to save backup state: %v", err)
@@ -239,8 +259,10 @@ func (s *BackupScheduler) CreateBackup() (string, error) {
 
 // recordError records an error in the backup state.
 func (s *BackupScheduler) recordError(err error) {
+	s.mu.Lock()
 	s.state.LastError = err.Error()
 	s.state.LastErrorTime = time.Now()
+	s.mu.Unlock()
 	if saveErr := s.SaveState(); saveErr != nil {
 		s.logger.Printf("Warning: failed to save backup state: %v", saveErr)
 	}
@@ -300,6 +322,8 @@ func (s *BackupScheduler) RotateBackups() error {
 
 // GetState returns a copy of the current backup state.
 func (s *BackupScheduler) GetState() BackupState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.state
 }
 

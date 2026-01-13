@@ -11,7 +11,7 @@ import (
 )
 
 // GeminiScanner parses Gemini CLI JSONL logs.
-// Gemini CLI stores logs at ~/.config/gemini/logs/ or $GEMINI_HOME/logs/.
+// Gemini CLI stores logs at ~/.gemini/logs/ or $GEMINI_HOME/logs/.
 type GeminiScanner struct {
 	logDir string
 }
@@ -21,7 +21,7 @@ func NewGeminiScanner() *GeminiScanner {
 	homeDir, _ := os.UserHomeDir()
 	geminiHome := os.Getenv("GEMINI_HOME")
 	if geminiHome == "" {
-		geminiHome = filepath.Join(homeDir, ".config", "gemini")
+		geminiHome = filepath.Join(homeDir, ".gemini")
 	}
 	return &GeminiScanner{logDir: filepath.Join(geminiHome, "logs")}
 }

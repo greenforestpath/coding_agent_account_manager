@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -152,7 +153,7 @@ func runDaemonBackground(interval, threshold time.Duration, verbose, usePool boo
 
 	// Redirect output to log file
 	logPath := daemon.LogFilePath()
-	if err := os.MkdirAll(logPath[:len(logPath)-len("daemon.log")-1], 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
 		return fmt.Errorf("create log directory: %w", err)
 	}
 

@@ -122,6 +122,42 @@ func TestMonitorRefreshUnsupportedProvider(t *testing.T) {
 	}
 }
 
+func TestMonitorRefreshClaudeFallbackAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	vault := authfile.NewVault(tmpDir)
+
+	writeProfileFile(t, vault, "claude", "legacy", ".claude.json", `{"oauthToken":"tok-legacy"}`)
+
+	fetcher := &fakeFetcher{
+		usages: map[string]*usage.UsageInfo{
+			"claude/legacy": {
+				Provider:    "claude",
+				ProfileName: "legacy",
+				PrimaryWindow: &usage.UsageWindow{
+					UsedPercent: 10,
+				},
+			},
+		},
+	}
+
+	mon := NewMonitor(
+		WithVault(vault),
+		WithFetcher(fetcher),
+		WithProviders([]string{"claude"}),
+		WithHealthStore(nil),
+	)
+
+	if err := mon.Refresh(context.Background()); err != nil {
+		t.Fatalf("Refresh() error: %v", err)
+	}
+
+	state := mon.GetState()
+	profile := state.Profiles["claude/legacy"]
+	if profile == nil || profile.Usage == nil || profile.Usage.Error != "" {
+		t.Fatalf("expected legacy claude profile usage, got %+v", profile)
+	}
+}
+
 func writeProfileFile(t *testing.T, vault *authfile.Vault, provider, profile, name, contents string) {
 	t.Helper()
 	dir := vault.ProfilePath(provider, profile)

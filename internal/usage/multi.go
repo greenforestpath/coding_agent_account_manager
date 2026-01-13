@@ -53,6 +53,10 @@ func NewMultiProfileFetcher(opts ...FetcherOption) *MultiProfileFetcher {
 // FetchAllProfiles fetches usage for all profiles of a given provider.
 // profiles is a map of profile name to access token.
 func (m *MultiProfileFetcher) FetchAllProfiles(ctx context.Context, provider string, profiles map[string]string) []ProfileUsage {
+	if m == nil {
+		m = &MultiProfileFetcher{}
+	}
+
 	var wg sync.WaitGroup
 	results := make([]ProfileUsage, 0, len(profiles))
 	var mu sync.Mutex
@@ -67,9 +71,25 @@ func (m *MultiProfileFetcher) FetchAllProfiles(ctx context.Context, provider str
 
 			switch provider {
 			case "claude":
-				info, err = m.claudeFetcher.Fetch(ctx, token)
+				if m.claudeFetcher == nil {
+					info = &UsageInfo{
+						Provider:  provider,
+						FetchedAt: time.Now(),
+						Error:     "claude fetcher unavailable",
+					}
+				} else {
+					info, err = m.claudeFetcher.Fetch(ctx, token)
+				}
 			case "codex":
-				info, err = m.codexFetcher.Fetch(ctx, token)
+				if m.codexFetcher == nil {
+					info = &UsageInfo{
+						Provider:  provider,
+						FetchedAt: time.Now(),
+						Error:     "codex fetcher unavailable",
+					}
+				} else {
+					info, err = m.codexFetcher.Fetch(ctx, token)
+				}
 			default:
 				info = &UsageInfo{
 					Provider:  provider,
@@ -78,12 +98,18 @@ func (m *MultiProfileFetcher) FetchAllProfiles(ctx context.Context, provider str
 				}
 			}
 
-			if err != nil && info == nil {
+			if info == nil {
+				errMsg := "usage fetcher returned no data"
+				if err != nil {
+					errMsg = err.Error()
+				}
 				info = &UsageInfo{
 					Provider:  provider,
 					FetchedAt: time.Now(),
-					Error:     err.Error(),
+					Error:     errMsg,
 				}
+			} else if err != nil && info.Error == "" {
+				info.Error = err.Error()
 			}
 
 			if info != nil {
@@ -102,11 +128,11 @@ func (m *MultiProfileFetcher) FetchAllProfiles(ctx context.Context, provider str
 					//
 					// However, typical CLI usage is sequential.
 					// We'll scan the last 24 hours of logs.
-					
+
 					// Use a 24-hour window for burn rate calculation
 					window := 24 * time.Hour
 					since := time.Now().Add(-window)
-					
+
 					// We need to find the correct log directory.
 					// For Vault mode, it's the standard provider log dir.
 					// But MultiProfileFetcher doesn't know about file system paths easily.
@@ -131,7 +157,7 @@ func (m *MultiProfileFetcher) FetchAllProfiles(ctx context.Context, provider str
 							// TODO: If we want to be precise per-profile, we'd need logs to contain
 							// some identity info, which they often don't.
 							// But for "burn rate", recent usage is what matters.
-							
+
 							burnRate := CalculateBurnRate(scanRes.Entries, window, DefaultBurnRateOptions())
 							if burnRate != nil {
 								info.BurnRate = burnRate
@@ -157,8 +183,14 @@ func (m *MultiProfileFetcher) FetchAllProfiles(ctx context.Context, provider str
 
 	// Sort by availability score (highest first)
 	sort.Slice(results, func(i, j int) bool {
-		scoreI := results[i].Usage.AvailabilityScore()
-		scoreJ := results[j].Usage.AvailabilityScore()
+		scoreI := 0
+		scoreJ := 0
+		if results[i].Usage != nil {
+			scoreI = results[i].Usage.AvailabilityScore()
+		}
+		if results[j].Usage != nil {
+			scoreJ = results[j].Usage.AvailabilityScore()
+		}
 		if scoreI == scoreJ {
 			return results[i].ProfileName < results[j].ProfileName
 		}
@@ -204,9 +236,9 @@ func ReadClaudeCredentials(path string) (accessToken string, accountID string, e
 			AccessToken string `json:"accessToken"`
 			AccountID   string `json:"accountId"`
 		} `json:"claudeAiOauth"`
-		OAuthToken  string `json:"oauthToken"`
-		AccessToken string `json:"access_token"`
-		AccessCamel string `json:"accessToken"`
+		OAuthToken  json.RawMessage `json:"oauthToken"`
+		AccessToken string          `json:"access_token"`
+		AccessCamel string          `json:"accessToken"`
 	}
 
 	if err := json.Unmarshal(data, &creds); err != nil {
@@ -217,8 +249,24 @@ func ReadClaudeCredentials(path string) (accessToken string, accountID string, e
 		return creds.ClaudeAiOauth.AccessToken, creds.ClaudeAiOauth.AccountID, nil
 	}
 
-	if creds.OAuthToken != "" {
-		return creds.OAuthToken, "", nil
+	if len(creds.OAuthToken) > 0 {
+		var token string
+		if err := json.Unmarshal(creds.OAuthToken, &token); err == nil && token != "" {
+			return token, "", nil
+		}
+
+		var oauth struct {
+			AccessToken string `json:"access_token"`
+			AccessCamel string `json:"accessToken"`
+		}
+		if err := json.Unmarshal(creds.OAuthToken, &oauth); err == nil {
+			if oauth.AccessToken != "" {
+				return oauth.AccessToken, "", nil
+			}
+			if oauth.AccessCamel != "" {
+				return oauth.AccessCamel, "", nil
+			}
+		}
 	}
 	if creds.AccessToken != "" {
 		return creds.AccessToken, "", nil
@@ -255,11 +303,6 @@ func ReadCodexCredentials(path string) (accessToken string, accountID string, er
 		return "", "", err
 	}
 
-	// Prefer API key if present
-	if creds.OpenAIAPIKey != "" {
-		return creds.OpenAIAPIKey, "", nil
-	}
-
 	// Fall back to OAuth tokens
 	if creds.Tokens != nil && creds.Tokens.AccessToken != "" {
 		return creds.Tokens.AccessToken, creds.Tokens.AccountID, nil
@@ -267,6 +310,11 @@ func ReadCodexCredentials(path string) (accessToken string, accountID string, er
 
 	if creds.AccessToken != "" {
 		return creds.AccessToken, creds.AccountID, nil
+	}
+
+	// API key auth does not support ChatGPT usage endpoints.
+	if creds.OpenAIAPIKey != "" {
+		return "", "", fmt.Errorf("API key auth does not support usage fetch")
 	}
 
 	return "", "", fmt.Errorf("no access token found in credentials")
@@ -305,6 +353,11 @@ func LoadProfileCredentials(vaultDir, provider string) (map[string]string, error
 				// Fall back to old location
 				oldPath := filepath.Join(profileDir, ".claude.json")
 				token, _, readErr = ReadClaudeCredentials(oldPath)
+				if readErr != nil {
+					// Fall back to claude-code auth.json (optional file)
+					authPath := filepath.Join(profileDir, "auth.json")
+					token, _, readErr = ReadClaudeCredentials(authPath)
+				}
 			}
 		case "codex":
 			authPath := filepath.Join(profileDir, "auth.json")

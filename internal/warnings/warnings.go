@@ -83,6 +83,9 @@ func (c *Checker) CheckAll(ctx context.Context) []Warning {
 		}
 
 		for _, profileName := range profiles {
+			if authfile.IsSystemProfile(profileName) {
+				continue
+			}
 			w := c.checkVaultProfile(ctx, tool, profileName)
 			warnings = append(warnings, w...)
 		}

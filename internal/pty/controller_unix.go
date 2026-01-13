@@ -229,12 +229,28 @@ func (c *unixController) WaitForPattern(ctx context.Context, pattern *regexp.Reg
 	go func() {
 		buf := make([]byte, 1024)
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
 			n, err := ptmx.Read(buf)
 			if n > 0 {
-				readCh <- readResult{data: buf[:n]}
+				// Copy the data to avoid race with buffer reuse
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case readCh <- readResult{data: data}:
+				case <-ctx.Done():
+					return
+				}
 			}
 			if err != nil {
-				readCh <- readResult{err: err}
+				select {
+				case readCh <- readResult{err: err}:
+				case <-ctx.Done():
+				}
 				return
 			}
 		}

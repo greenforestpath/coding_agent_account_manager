@@ -52,6 +52,7 @@ type Watcher struct {
 	events    chan Event
 	errors    chan error
 	done      chan struct{}
+	closeOnce sync.Once // Ensures done channel is only closed once
 
 	debouncer *debouncer
 
@@ -161,12 +162,11 @@ func (w *Watcher) Close() error {
 		return nil
 	}
 
-	select {
-	case <-w.done:
-		// already closed
-	default:
+	// Use sync.Once to ensure done channel is only closed once,
+	// preventing panic from concurrent Close() calls.
+	w.closeOnce.Do(func() {
 		close(w.done)
-	}
+	})
 
 	// Closing the underlying watcher unblocks the run loop.
 	err := w.fsWatcher.Close()
@@ -222,23 +222,24 @@ func (w *Watcher) addDir(path string) error {
 	clean := filepath.Clean(path)
 
 	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	if _, ok := w.watched[clean]; ok {
-		w.mu.Unlock()
 		return nil
 	}
-	w.watched[clean] = struct{}{}
-	w.mu.Unlock()
 
+	// Add to fsWatcher while holding the lock to prevent TOCTOU race
+	// where another goroutine could see the path in watched map before
+	// fsWatcher.Add succeeds.
 	if err := w.fsWatcher.Add(clean); err != nil {
 		// Directory may disappear between discovery and Add.
-		w.mu.Lock()
-		delete(w.watched, clean)
-		w.mu.Unlock()
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("watch %s: %w", clean, err)
 	}
+
+	w.watched[clean] = struct{}{}
 	return nil
 }
 

@@ -207,6 +207,9 @@ func runWrap(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("select profile: %w", err)
 		}
+		if res == nil || res.Selected == "" {
+			return fmt.Errorf("no profile selected for %s", tool)
+		}
 		activeProfileName = res.Selected
 		// Restore it
 		if err := vault.Restore(fileSet, activeProfileName); err != nil {
@@ -254,27 +257,34 @@ func runWrap(cmd *cobra.Command, args []string) error {
 		Env:      nil, // Inherit
 	}
 
-	// Handle signals
-	ctx, cancel := context.WithCancel(context.Background())
+	// Handle signals - use cmd.Context() for proper context propagation
+	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigChan
-		cancel()
+		select {
+		case <-sigChan:
+			cancel()
+		case <-ctx.Done():
+			// Context cancelled, goroutine can exit cleanly
+		}
 	}()
 
 	err = smartRunner.Run(ctx, runOptions)
 
+	// Stop signal handling and allow the signal goroutine to exit
+	signal.Stop(sigChan)
+	cancel() // Ensure goroutine exits via ctx.Done() path
+
 	// Handle exit code
 	var exitErr *exec.ExitCodeError
 	if errors.As(err, &exitErr) {
-		// Clean up before exiting
+		// Clean up before exiting - os.Exit() bypasses defers
 		if db != nil {
 			db.Close()
 		}
-		cancel()
 		os.Exit(exitErr.Code)
 	}
 
