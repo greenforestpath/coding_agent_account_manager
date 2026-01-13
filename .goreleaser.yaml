@@ -59,3 +59,38 @@ release:
     name: coding_agent_account_manager
   draft: false
   prerelease: auto
+
+# Homebrew tap publishing
+brews:
+  - name: caam
+    repository:
+      owner: Dicklesworthstone
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/Dicklesworthstone/coding_agent_account_manager
+    description: "CLI tool for managing AI coding agent accounts and configurations"
+    license: "MIT"
+    install: |
+      bin.install "caam"
+      generate_completions_from_executable(bin/"caam", "completion")
+    test: |
+      system "#{bin}/caam", "--version"
+    caveats: |
+      To get started with caam:
+        caam list              # List configured accounts
+        caam switch <account>  # Switch to an account
+        caam add               # Add a new account
+
+# Scoop bucket publishing
+scoops:
+  - name: caam
+    repository:
+      owner: Dicklesworthstone
+      name: scoop-bucket
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/Dicklesworthstone/coding_agent_account_manager
+    description: "CLI tool for managing AI coding agent accounts and configurations"
+    license: MIT
