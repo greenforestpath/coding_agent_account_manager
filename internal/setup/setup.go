@@ -528,9 +528,33 @@ func (o *Orchestrator) generateLocalConfig() (string, error) {
 		return "", err
 	}
 
-	// Write config
-	if err := os.WriteFile(configPath, data, 0600); err != nil {
-		return "", err
+	// Atomic write: write to temp file, sync, then rename
+	tmpPath := configPath + ".tmp"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", fmt.Errorf("create temp config file: %w", err)
+	}
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("write temp config file: %w", err)
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("sync temp config file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("close temp config file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, configPath); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("rename temp config file: %w", err)
 	}
 
 	o.logger.Info("wrote local agent config", "path", configPath)

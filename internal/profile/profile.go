@@ -311,16 +311,54 @@ func (p *Profile) IsLockStale() (bool, error) {
 // CleanStaleLock removes a stale lock file if the owning process is dead.
 // Returns true if a stale lock was cleaned, false if no action was taken.
 // Returns an error if there's a valid lock or an I/O error.
+//
+// This function is safe against TOCTOU races: it re-verifies the lock file's
+// PID before removal to ensure we don't accidentally remove a lock that was
+// created by another process between our check and removal.
 func (p *Profile) CleanStaleLock() (bool, error) {
-	stale, err := p.IsLockStale()
+	// Read lock info to get the PID
+	info, err := p.GetLockInfo()
 	if err != nil {
 		return false, err
 	}
-	if !stale {
+	if info == nil {
+		// No lock file exists
 		return false, nil
 	}
 
-	// Remove the stale lock
+	// Check if the process is still running
+	if IsProcessAlive(info.PID) {
+		// Lock is valid, not stale
+		return false, nil
+	}
+
+	// Lock appears stale. Re-read the lock file to protect against TOCTOU race:
+	// Between our check and now, another process could have:
+	// 1. Noticed the stale lock and removed it
+	// 2. Created a new lock with its own PID
+	// If we just call Unlock(), we'd remove the new valid lock.
+	infoNow, err := p.GetLockInfo()
+	if err != nil {
+		return false, err
+	}
+	if infoNow == nil {
+		// Lock was already cleaned by another process
+		return false, nil
+	}
+
+	// Only remove if the PID still matches what we observed as stale
+	if infoNow.PID != info.PID {
+		// A different process now owns the lock - don't remove it
+		return false, nil
+	}
+
+	// Re-verify the PID is still dead (paranoid check)
+	if IsProcessAlive(infoNow.PID) {
+		// Process came back alive (unlikely but possible with PID reuse)
+		return false, nil
+	}
+
+	// Safe to remove: we've verified the same stale PID is still in the lock file
 	if err := p.Unlock(); err != nil {
 		return false, fmt.Errorf("remove stale lock: %w", err)
 	}
