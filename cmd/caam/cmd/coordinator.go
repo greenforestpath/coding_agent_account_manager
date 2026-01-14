@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -62,6 +63,7 @@ var (
 	coordinatorResumePrompt string
 	coordinatorVerbose      bool
 	coordinatorBackend      string
+	coordinatorConfigPath   string
 )
 
 func init() {
@@ -75,6 +77,7 @@ func init() {
 	coordinatorCmd.Flags().BoolVar(&coordinatorVerbose, "verbose", false, "Verbose output")
 	coordinatorCmd.Flags().StringVar(&coordinatorBackend, "backend", "auto",
 		"Terminal multiplexer backend: wezterm (preferred), tmux, or auto")
+	coordinatorCmd.Flags().StringVar(&coordinatorConfigPath, "config", "", "Path to JSON config file")
 }
 
 func runCoordinator(cmd *cobra.Command, args []string) error {
@@ -87,24 +90,35 @@ func runCoordinator(cmd *cobra.Command, args []string) error {
 		Level: logLevel,
 	}))
 
-	// Parse backend flag
-	var backend coordinator.Backend
-	switch strings.ToLower(coordinatorBackend) {
-	case "wezterm":
-		backend = coordinator.BackendWezTerm
-	case "tmux":
-		backend = coordinator.BackendTmux
-	case "auto", "":
-		backend = coordinator.BackendAuto
-	default:
-		return fmt.Errorf("invalid backend %q: use wezterm, tmux, or auto", coordinatorBackend)
+	config := coordinator.DefaultConfig()
+	apiPort := coordinatorPort
+
+	if coordinatorConfigPath != "" {
+		loadedConfig, loadedPort, err := loadCoordinatorConfig(coordinatorConfigPath)
+		if err != nil {
+			return err
+		}
+		config = loadedConfig
+		apiPort = loadedPort
 	}
 
-	// Create coordinator config
-	config := coordinator.DefaultConfig()
-	config.Backend = backend
-	config.PollInterval = time.Duration(coordinatorPollMs) * time.Millisecond
-	config.ResumePrompt = coordinatorResumePrompt
+	if cmd.Flags().Changed("backend") {
+		backend, err := parseBackend(coordinatorBackend)
+		if err != nil {
+			return err
+		}
+		config.Backend = backend
+	}
+	if cmd.Flags().Changed("poll-interval") {
+		config.PollInterval = time.Duration(coordinatorPollMs) * time.Millisecond
+	}
+	if cmd.Flags().Changed("resume-prompt") {
+		config.ResumePrompt = coordinatorResumePrompt
+	}
+	if cmd.Flags().Changed("port") {
+		apiPort = coordinatorPort
+	}
+
 	config.Logger = logger
 
 	// Create coordinator
@@ -133,7 +147,7 @@ func runCoordinator(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create API server
-	api := coordinator.NewAPIServer(coord, coordinatorPort, logger)
+	api := coordinator.NewAPIServer(coord, apiPort, logger)
 
 	// Start coordinator
 	ctx, cancel := context.WithCancel(cmd.Context())
@@ -155,8 +169,8 @@ func runCoordinator(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Auth coordinator started\n")
 	fmt.Printf("  Backend: %s\n", coord.Backend())
-	fmt.Printf("  API: http://localhost:%d\n", coordinatorPort)
-	fmt.Printf("  Poll interval: %dms\n", coordinatorPollMs)
+	fmt.Printf("  API: http://localhost:%d\n", apiPort)
+	fmt.Printf("  Poll interval: %dms\n", int(config.PollInterval.Milliseconds()))
 	if coord.Backend() == "tmux" {
 		fmt.Println("\nNote: Using tmux fallback. WezTerm is recommended for better integration.")
 	}
@@ -195,6 +209,83 @@ func truncateURL(url string) string {
 		return url[:77] + "..."
 	}
 	return url
+}
+
+type coordinatorFileConfig struct {
+	Port         int    `json:"port"`
+	PollInterval string `json:"poll_interval"`
+	AuthTimeout  string `json:"auth_timeout"`
+	StateTimeout string `json:"state_timeout"`
+	ResumePrompt string `json:"resume_prompt"`
+	OutputLines  int    `json:"output_lines"`
+	Backend      string `json:"backend"`
+}
+
+func loadCoordinatorConfig(path string) (coordinator.Config, int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return coordinator.Config{}, 0, fmt.Errorf("read config: %w", err)
+	}
+
+	var raw coordinatorFileConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return coordinator.Config{}, 0, fmt.Errorf("parse config: %w", err)
+	}
+
+	cfg := coordinator.DefaultConfig()
+	apiPort := coordinatorPort
+	if raw.Port != 0 {
+		apiPort = raw.Port
+	}
+	if raw.PollInterval != "" {
+		if d, err := time.ParseDuration(raw.PollInterval); err == nil {
+			cfg.PollInterval = d
+		} else {
+			return coordinator.Config{}, 0, fmt.Errorf("parse poll_interval: %w", err)
+		}
+	}
+	if raw.AuthTimeout != "" {
+		if d, err := time.ParseDuration(raw.AuthTimeout); err == nil {
+			cfg.AuthTimeout = d
+		} else {
+			return coordinator.Config{}, 0, fmt.Errorf("parse auth_timeout: %w", err)
+		}
+	}
+	if raw.StateTimeout != "" {
+		if d, err := time.ParseDuration(raw.StateTimeout); err == nil {
+			cfg.StateTimeout = d
+		} else {
+			return coordinator.Config{}, 0, fmt.Errorf("parse state_timeout: %w", err)
+		}
+	}
+	if raw.ResumePrompt != "" {
+		cfg.ResumePrompt = raw.ResumePrompt
+	}
+	if raw.OutputLines != 0 {
+		cfg.OutputLines = raw.OutputLines
+	}
+	if raw.Backend != "" {
+		backend, err := parseBackend(raw.Backend)
+		if err != nil {
+			return coordinator.Config{}, 0, err
+		}
+		cfg.Backend = backend
+	}
+
+	return cfg, apiPort, nil
+}
+
+func parseBackend(value string) (coordinator.Backend, error) {
+	switch strings.ToLower(value) {
+	case "wezterm":
+		return coordinator.BackendWezTerm, nil
+	case "tmux":
+		return coordinator.BackendTmux, nil
+	case "auto", "":
+		return coordinator.BackendAuto, nil
+	default:
+		return "", fmt.Errorf("invalid backend %q: use wezterm, tmux, or auto", value)
+	}
 }
 
 // statusCmd shows coordinator status

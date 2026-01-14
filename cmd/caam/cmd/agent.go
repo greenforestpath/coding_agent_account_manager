@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,13 +53,14 @@ Examples:
 }
 
 var (
-	agentPort           int
-	agentCoordinator    string
-	agentAccounts       []string
-	agentStrategy       string
-	agentChromeProfile  string
-	agentHeadless       bool
-	agentVerbose        bool
+	agentPort          int
+	agentCoordinator   string
+	agentAccounts      []string
+	agentStrategy      string
+	agentChromeProfile string
+	agentHeadless      bool
+	agentVerbose       bool
+	agentConfigPath    string
 )
 
 func init() {
@@ -75,6 +78,7 @@ func init() {
 	agentCmd.Flags().BoolVar(&agentHeadless, "headless", false,
 		"Run Chrome in headless mode (may not work with Google OAuth)")
 	agentCmd.Flags().BoolVar(&agentVerbose, "verbose", false, "Verbose output")
+	agentCmd.Flags().StringVar(&agentConfigPath, "config", "", "Path to JSON config file")
 }
 
 func runAgent(cmd *cobra.Command, args []string) error {
@@ -87,31 +91,79 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Level: logLevel,
 	}))
 
+	if agentConfigPath != "" {
+		return runAgentFromConfig(cmd, logger, agentConfigPath)
+	}
+
 	// Parse strategy
-	var strategy agent.AccountStrategy
-	switch agentStrategy {
-	case "lru":
-		strategy = agent.StrategyLRU
-	case "round_robin":
-		strategy = agent.StrategyRoundRobin
-	case "random":
-		strategy = agent.StrategyRandom
-	default:
-		return fmt.Errorf("unknown strategy: %s", agentStrategy)
+	strategy, err := parseStrategy(agentStrategy)
+	if err != nil {
+		return err
 	}
 
 	// Create config
-	config := agent.Config{
-		Port:              agentPort,
-		CoordinatorURL:    agentCoordinator,
-		PollInterval:      2 * time.Second,
-		ChromeUserDataDir: agentChromeProfile,
-		Headless:          agentHeadless,
-		AccountStrategy:   strategy,
-		Accounts:          agentAccounts,
-		Logger:            logger,
+	config := agent.DefaultConfig()
+	config.Port = agentPort
+	config.CoordinatorURL = agentCoordinator
+	config.PollInterval = 2 * time.Second
+	config.ChromeUserDataDir = agentChromeProfile
+	config.Headless = agentHeadless
+	config.AccountStrategy = strategy
+	config.Accounts = agentAccounts
+	config.Logger = logger
+
+	return runSingleAgent(cmd, logger, config, agentStrategy, agentAccounts, agentChromeProfile)
+}
+
+func truncateCode(code string) string {
+	if len(code) <= 4 {
+		return code
+	}
+	return code[:4]
+}
+
+func runAgentFromConfig(cmd *cobra.Command, logger *slog.Logger, path string) error {
+	useMulti, singleCfg, multiCfg, err := loadAgentConfig(path)
+	if err != nil {
+		return err
 	}
 
+	if useMulti {
+		multiCfg.Logger = logger
+		if multiCfg.PollInterval == 0 {
+			multiCfg.PollInterval = 2 * time.Second
+		}
+		if multiCfg.AccountStrategy == "" {
+			multiCfg.AccountStrategy = agent.StrategyLRU
+		}
+		if multiCfg.Port == 0 {
+			multiCfg.Port = 7891
+		}
+		if len(multiCfg.Coordinators) == 0 {
+			return fmt.Errorf("config has no coordinators")
+		}
+		return runMultiAgent(cmd, logger, multiCfg)
+	}
+
+	singleCfg.Logger = logger
+	if singleCfg.PollInterval == 0 {
+		singleCfg.PollInterval = 2 * time.Second
+	}
+	if singleCfg.AccountStrategy == "" {
+		singleCfg.AccountStrategy = agent.StrategyLRU
+	}
+	if singleCfg.Port == 0 {
+		singleCfg.Port = 7891
+	}
+	if singleCfg.CoordinatorURL == "" {
+		return fmt.Errorf("config missing coordinator URL")
+	}
+
+	strategy := string(singleCfg.AccountStrategy)
+	return runSingleAgent(cmd, logger, singleCfg, strategy, singleCfg.Accounts, singleCfg.ChromeUserDataDir)
+}
+
+func runSingleAgent(cmd *cobra.Command, logger *slog.Logger, config agent.Config, strategy string, accounts []string, chromeProfile string) error {
 	// Create agent
 	ag := agent.New(config)
 
@@ -152,14 +204,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Printf("Auth agent started\n")
-	fmt.Printf("  API: http://localhost:%d\n", agentPort)
-	fmt.Printf("  Coordinator: %s\n", agentCoordinator)
-	fmt.Printf("  Strategy: %s\n", agentStrategy)
-	if len(agentAccounts) > 0 {
-		fmt.Printf("  Accounts: %v\n", agentAccounts)
+	fmt.Printf("  API: http://localhost:%d\n", config.Port)
+	fmt.Printf("  Coordinator: %s\n", config.CoordinatorURL)
+	fmt.Printf("  Strategy: %s\n", strategy)
+	if len(accounts) > 0 {
+		fmt.Printf("  Accounts: %v\n", accounts)
 	}
-	if agentChromeProfile != "" {
-		fmt.Printf("  Chrome profile: %s\n", agentChromeProfile)
+	if chromeProfile != "" {
+		fmt.Printf("  Chrome profile: %s\n", chromeProfile)
 	}
 	fmt.Println("\nWaiting for auth requests...")
 	fmt.Println("Press Ctrl+C to stop.")
@@ -183,11 +235,173 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func truncateCode(code string) string {
-	if len(code) <= 4 {
-		return code
+func runMultiAgent(cmd *cobra.Command, logger *slog.Logger, config agent.MultiConfig) error {
+	ma := agent.NewMulti(config)
+
+	ma.OnAuthStart = func(coord, url, account string) {
+		acc := account
+		if acc == "" {
+			acc = "(auto)"
+		}
+		fmt.Printf("[%s] %s: Starting auth for %s\n",
+			time.Now().Format("15:04:05"), coord, acc)
 	}
-	return code[:4]
+
+	ma.OnAuthComplete = func(coord, account, code string) {
+		fmt.Printf("[%s] %s: Auth completed for %s (code: %s...)\n",
+			time.Now().Format("15:04:05"), coord, account, truncateCode(code))
+	}
+
+	ma.OnAuthFailed = func(coord, account string, err error) {
+		fmt.Printf("[%s] %s: Auth FAILED for %s: %v\n",
+			time.Now().Format("15:04:05"), coord, account, err)
+	}
+
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+
+	if err := ma.Start(ctx); err != nil {
+		return fmt.Errorf("start agent: %w", err)
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	fmt.Printf("Auth agent started (multi-coordinator)\n")
+	fmt.Printf("  API: http://localhost:%d\n", config.Port)
+	fmt.Printf("  Coordinators: %d\n", len(config.Coordinators))
+	fmt.Printf("  Strategy: %s\n", config.AccountStrategy)
+	if len(config.Accounts) > 0 {
+		fmt.Printf("  Accounts: %v\n", config.Accounts)
+	}
+	if config.ChromeUserDataDir != "" {
+		fmt.Printf("  Chrome profile: %s\n", config.ChromeUserDataDir)
+	}
+	fmt.Println("\nWaiting for auth requests...")
+	fmt.Println("Press Ctrl+C to stop.")
+
+	select {
+	case <-sigCh:
+		fmt.Println("\nShutting down...")
+	case <-ctx.Done():
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+
+	if err := ma.Stop(shutdownCtx); err != nil {
+		logger.Warn("agent stop error", "error", err)
+	}
+
+	fmt.Println("Agent stopped.")
+	return nil
+}
+
+type agentFileConfig struct {
+	Port             int                          `json:"port"`
+	CoordinatorURL   string                       `json:"coordinator_url"`
+	Coordinator      string                       `json:"coordinator"`
+	PollInterval     string                       `json:"poll_interval"`
+	ChromeProfile    string                       `json:"chrome_profile"`
+	Headless         bool                         `json:"headless"`
+	Strategy         string                       `json:"strategy"`
+	Accounts         []string                     `json:"accounts"`
+	Coordinators     []*agent.CoordinatorEndpoint `json:"coordinators"`
+	ChromeUserData   string                       `json:"chrome_user_data_dir"`
+	ChromeProfileDir string                       `json:"chrome_profile_dir"`
+}
+
+func loadAgentConfig(path string) (bool, agent.Config, agent.MultiConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, agent.Config{}, agent.MultiConfig{}, fmt.Errorf("read config: %w", err)
+	}
+
+	var raw agentFileConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, agent.Config{}, agent.MultiConfig{}, fmt.Errorf("parse config: %w", err)
+	}
+
+	useMulti := len(raw.Coordinators) > 0
+	pollInterval, err := parseOptionalDuration(raw.PollInterval)
+	if err != nil {
+		return false, agent.Config{}, agent.MultiConfig{}, err
+	}
+	if useMulti {
+		cfg := agent.DefaultMultiConfig()
+		if raw.Port != 0 {
+			cfg.Port = raw.Port
+		}
+		if pollInterval != 0 {
+			cfg.PollInterval = pollInterval
+		}
+		cfg.ChromeUserDataDir = firstNonEmpty(raw.ChromeProfile, raw.ChromeUserData, raw.ChromeProfileDir)
+		cfg.Headless = raw.Headless
+		if raw.Strategy != "" {
+			strategy, err := parseStrategy(raw.Strategy)
+			if err != nil {
+				return false, agent.Config{}, agent.MultiConfig{}, err
+			}
+			cfg.AccountStrategy = strategy
+		}
+		cfg.Accounts = raw.Accounts
+		cfg.Coordinators = raw.Coordinators
+		return true, agent.Config{}, cfg, nil
+	}
+
+	cfg := agent.DefaultConfig()
+	if raw.Port != 0 {
+		cfg.Port = raw.Port
+	}
+	if pollInterval != 0 {
+		cfg.PollInterval = pollInterval
+	}
+	cfg.ChromeUserDataDir = firstNonEmpty(raw.ChromeProfile, raw.ChromeUserData, raw.ChromeProfileDir)
+	cfg.Headless = raw.Headless
+	if raw.Strategy != "" {
+		strategy, err := parseStrategy(raw.Strategy)
+		if err != nil {
+			return false, agent.Config{}, agent.MultiConfig{}, err
+		}
+		cfg.AccountStrategy = strategy
+	}
+	cfg.Accounts = raw.Accounts
+	cfg.CoordinatorURL = firstNonEmpty(raw.CoordinatorURL, raw.Coordinator)
+
+	return false, cfg, agent.MultiConfig{}, nil
+}
+
+func parseStrategy(value string) (agent.AccountStrategy, error) {
+	switch value {
+	case "lru":
+		return agent.StrategyLRU, nil
+	case "round_robin":
+		return agent.StrategyRoundRobin, nil
+	case "random":
+		return agent.StrategyRandom, nil
+	default:
+		return "", fmt.Errorf("unknown strategy: %s", value)
+	}
+}
+
+func parseOptionalDuration(value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("parse poll_interval: %w", err)
+	}
+	return d, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // testAuthCmd tests OAuth flow manually

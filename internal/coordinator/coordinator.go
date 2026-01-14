@@ -272,17 +272,20 @@ func (c *Coordinator) processPaneState(ctx context.Context, pane Pane) {
 		return
 	}
 
-	// Skip if output hasn't changed
+	currentState := tracker.GetState()
+	outputChanged := false
+
 	tracker.mu.Lock()
-	if output == tracker.LastOutput {
-		tracker.LastCheck = time.Now()
-		tracker.mu.Unlock()
-		return
+	if output != tracker.LastOutput {
+		tracker.LastOutput = output
+		outputChanged = true
 	}
-	tracker.LastOutput = output
+	tracker.LastCheck = time.Now()
 	tracker.mu.Unlock()
 
-	currentState := tracker.GetState()
+	if !outputChanged && currentState == StateIdle {
+		return
+	}
 
 	// Handle state-specific logic
 	switch currentState {

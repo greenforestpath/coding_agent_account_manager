@@ -1,6 +1,8 @@
 package coordinator
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -193,5 +195,98 @@ func TestPaneStateString(t *testing.T) {
 				t.Errorf("String() = %q, want %q", got, tt.expected)
 			}
 		})
+	}
+}
+
+type fakePaneClient struct {
+	panes  []Pane
+	output string
+	sent   []string
+	mu     sync.Mutex
+}
+
+func (f *fakePaneClient) ListPanes(ctx context.Context) ([]Pane, error) {
+	return f.panes, nil
+}
+
+func (f *fakePaneClient) GetText(ctx context.Context, paneID int, startLine int) (string, error) {
+	return f.output, nil
+}
+
+func (f *fakePaneClient) SendText(ctx context.Context, paneID int, text string, noPaste bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, text)
+	return nil
+}
+
+func (f *fakePaneClient) IsAvailable(ctx context.Context) bool {
+	return true
+}
+
+func (f *fakePaneClient) Backend() string {
+	return "fake"
+}
+
+func (f *fakePaneClient) sentText() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.sent))
+	copy(out, f.sent)
+	return out
+}
+
+func TestCoordinator_AuthPendingProcessesWithoutOutputChange(t *testing.T) {
+	client := &fakePaneClient{
+		panes:  []Pane{{PaneID: 1}},
+		output: "Paste code here if prompted >",
+	}
+
+	cfg := DefaultConfig()
+	coord := New(cfg)
+	coord.paneClient = client
+
+	tracker := NewPaneTracker(1)
+	tracker.LastOutput = client.output
+	tracker.SetState(StateAuthPending)
+	tracker.SetRequestID("req-1")
+
+	coord.trackers[1] = tracker
+	coord.requests["req-1"] = &AuthRequest{
+		ID:        "req-1",
+		PaneID:    1,
+		URL:       "https://claude.ai/oauth/authorize?code_challenge=abc",
+		CreatedAt: time.Now(),
+		Status:    "pending",
+	}
+
+	if err := coord.ReceiveAuthResponse(AuthResponse{
+		RequestID: "req-1",
+		Code:      "CODE123",
+		Account:   "user@example.com",
+	}); err != nil {
+		t.Fatalf("ReceiveAuthResponse error: %v", err)
+	}
+
+	coord.processPaneState(context.Background(), client.panes[0])
+	if tracker.GetState() != StateCodeReceived {
+		t.Fatalf("state after auth response = %v, want %v", tracker.GetState(), StateCodeReceived)
+	}
+
+	coord.processPaneState(context.Background(), client.panes[0])
+	if tracker.GetState() != StateAwaitingConfirm {
+		t.Fatalf("state after code injection = %v, want %v", tracker.GetState(), StateAwaitingConfirm)
+	}
+
+	sent := client.sentText()
+	found := false
+	for _, s := range sent {
+		if s == "CODE123\n" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected code to be injected, sent=%v", sent)
 	}
 }
