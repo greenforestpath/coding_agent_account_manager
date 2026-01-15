@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -44,6 +45,9 @@ type SmartRunner struct {
 	handoffConfig *config.HandoffConfig
 	notifier      notify.Notifier
 
+	// Cooldown duration to apply when rate limit is detected
+	cooldownDuration time.Duration
+
 	// State (protected by mu)
 	mu              sync.Mutex
 	currentProfile  string
@@ -66,12 +70,13 @@ type loginResult struct {
 
 // SmartRunnerOptions configures the SmartRunner.
 type SmartRunnerOptions struct {
-	HandoffConfig *config.HandoffConfig
-	Notifier      notify.Notifier
-	Vault         *authfile.Vault
-	DB            *caamdb.DB
-	AuthPool      *authpool.AuthPool
-	Rotation      *rotation.Selector
+	HandoffConfig    *config.HandoffConfig
+	Notifier         notify.Notifier
+	Vault            *authfile.Vault
+	DB               *caamdb.DB
+	AuthPool         *authpool.AuthPool
+	Rotation         *rotation.Selector
+	CooldownDuration time.Duration
 }
 
 // NewSmartRunner creates a new SmartRunner.
@@ -83,20 +88,21 @@ func NewSmartRunner(runner *Runner, opts SmartRunnerOptions) *SmartRunner {
 	}
 
 	return &SmartRunner{
-		Runner:        runner,
-		vault:         opts.Vault,
-		db:            opts.DB,
-		authPool:      opts.AuthPool,
-		rotation:      opts.Rotation,
-		handoffConfig: opts.HandoffConfig,
-		notifier:      notifier,
-		state:         Running,
-		loginDone:     make(chan loginResult, 1),
+		Runner:           runner,
+		vault:            opts.Vault,
+		db:               opts.DB,
+		authPool:         opts.AuthPool,
+		rotation:         opts.Rotation,
+		handoffConfig:    opts.HandoffConfig,
+		notifier:         notifier,
+		cooldownDuration: opts.CooldownDuration,
+		state:            Running,
+		loginDone:        make(chan loginResult, 1),
 	}
 }
 
 // Run executes the command with smart handoff capabilities.
-func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) error {
+func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) (err error) {
 	// Initialize rate limit detector
 	detector, err := ratelimit.NewDetector(
 		ratelimit.ProviderFromString(opts.Provider.ID()),
@@ -115,6 +121,49 @@ func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	r.currentProfile = opts.Profile.Name
+
+	// Log activation event
+	if r.db != nil {
+		_ = r.db.Log(caamdb.Event{
+			Type:        caamdb.EventActivate,
+			Provider:    opts.Provider.ID(),
+			ProfileName: r.currentProfile,
+			Timestamp:   time.Now(),
+		})
+	}
+
+	// Track session
+	startTime := time.Now()
+	defer func() {
+		if r.db != nil {
+			duration := time.Since(startTime)
+			// Determine final exit code from error
+			finalCode := 0
+			if err != nil {
+				var exitErr *ExitCodeError
+				// Check if it's an ExitCodeError (wrapper type in this package)
+				if errors.As(err, &exitErr) {
+					finalCode = exitErr.Code
+				} else {
+					finalCode = 1 // Generic error
+				}
+			}
+
+			session := caamdb.WrapSession{
+				Provider:        opts.Provider.ID(),
+				ProfileName:     r.currentProfile, // Use the final profile
+				StartedAt:       startTime,
+				EndedAt:         time.Now(),
+				DurationSeconds: int(duration.Seconds()),
+				ExitCode:        finalCode,
+				RateLimitHit:    r.handoffCount > 0,
+			}
+			if r.handoffCount > 0 {
+				session.Notes = fmt.Sprintf("handoffs: %d", r.handoffCount)
+			}
+			_ = r.db.RecordWrapSession(session)
+		}
+	}()
 
 	// Lock profile
 	if !opts.NoLock {
@@ -169,11 +218,21 @@ func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) error {
 		return fmt.Errorf("start pty: %w", err)
 	}
 
+	var capture *codexSessionCapture
+	if opts.Provider.ID() == "codex" {
+		capture = &codexSessionCapture{}
+	}
+
 	// Start output monitoring in background
 	monitorCtx, cancelMonitor := context.WithCancel(ctx)
 	defer cancelMonitor()
 	monitorDone := make(chan struct{})
-	go r.monitorOutput(monitorCtx, ctrl, monitorDone)
+	
+	var observer func(string)
+	if capture != nil {
+		observer = capture.ObserveLine
+	}
+	go r.monitorOutput(monitorCtx, ctrl, monitorDone, observer)
 
 	// Wait for command completion using the controller's Wait method
 	exitCode, waitErr := ctrl.Wait()
@@ -184,7 +243,14 @@ func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) error {
 	r.wg.Wait()
 
 	// Update profile metadata
-	opts.Profile.LastUsedAt = time.Now()
+	now := time.Now()
+	opts.Profile.LastUsedAt = now
+	if capture != nil {
+		if sessionID := capture.ID(); sessionID != "" {
+			opts.Profile.LastSessionID = sessionID
+			opts.Profile.LastSessionTS = now.UTC()
+		}
+	}
 	if saveErr := opts.Profile.Save(); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to save profile metadata: %v\n", saveErr)
 	}
@@ -258,7 +324,10 @@ func (r *SmartRunner) handleRateLimit(ctx context.Context) {
 	r.notifyHandoff(r.currentProfile, nextProfile)
 
 	// 3. Mark current profile as in cooldown (if authPool is available)
-	cooldownDuration := 60 * time.Minute
+	cooldownDuration := r.cooldownDuration
+	if cooldownDuration == 0 {
+		cooldownDuration = 60 * time.Minute
+	}
 	if r.authPool != nil {
 		r.authPool.SetCooldown(r.loginHandler.Provider(), r.currentProfile, cooldownDuration)
 	}
@@ -379,13 +448,16 @@ func (r *SmartRunner) drainLoginDone() {
 	}
 }
 
-func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller, done chan<- struct{}) {
+func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller, done chan<- struct{}, observer func(string)) {
 	defer close(done)
 	// Create an observing writer to handle split packets and buffering
 	// Use a local flag to prevent repeated dispatching within this loop context
 	dispatched := false
 
 	writer := ratelimit.NewObservingWriter(r.detector, func(line string) {
+		if observer != nil {
+			observer(line)
+		}
 		// This callback is triggered when a complete line is processed
 		if !dispatched && r.detector.Detected() {
 			dispatched = true

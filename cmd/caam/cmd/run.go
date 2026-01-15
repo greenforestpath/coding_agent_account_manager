@@ -99,6 +99,7 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	// Get flags
 	quiet, _ := cmd.Flags().GetBool("quiet")
 	algorithmStr, _ := cmd.Flags().GetString("algorithm")
+	cooldownDur, _ := cmd.Flags().GetDuration("cooldown")
 
 	// Parse algorithm
 	var algorithm rotation.Algorithm
@@ -179,12 +180,13 @@ func runWrap(cmd *cobra.Command, args []string) error {
 
 	// Create SmartRunner
 	opts := exec.SmartRunnerOptions{
-		HandoffConfig: &spmCfg.Handoff,
-		Notifier:      notifier,
-		Vault:         vault,
-		DB:            db,
-		AuthPool:      pool,
-		Rotation:      selector,
+		HandoffConfig:    &spmCfg.Handoff,
+		Notifier:         notifier,
+		Vault:            vault,
+		DB:               db,
+		AuthPool:         pool,
+		Rotation:         selector,
+		CooldownDuration: cooldownDur,
 	}
 	smartRunner := exec.NewSmartRunner(runner, opts)
 
@@ -240,13 +242,7 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	}
 
 	// Set CLI overrides
-	if cmd.Flags().Changed("cooldown") {
-		// SmartRunner uses hardcoded 30m currently or what?
-		// handleRateLimit uses 30m.
-		// We should probably update SmartRunner to accept cooldown override if possible.
-		// But SmartRunnerOptions doesn't have it.
-		// It's fine for now.
-	}
+	// Cooldown duration is now passed directly to SmartRunner via opts.CooldownDuration
 
 	// Run
 	runOptions := exec.RunOptions{

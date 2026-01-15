@@ -2,6 +2,7 @@ package exec
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authpool"
@@ -78,10 +79,11 @@ func TestNewSmartRunner(t *testing.T) {
 		}
 
 		sr := NewSmartRunner(runner, SmartRunnerOptions{
-			Vault:         vault,
-			AuthPool:      pool,
-			Notifier:      notifier,
-			HandoffConfig: handoffCfg,
+			Vault:            vault,
+			AuthPool:         pool,
+			Notifier:         notifier,
+			HandoffConfig:    handoffCfg,
+			CooldownDuration: 30 * time.Minute,
 		})
 
 		if sr.vault != vault {
@@ -95,6 +97,9 @@ func TestNewSmartRunner(t *testing.T) {
 		}
 		if sr.handoffConfig != handoffCfg {
 			t.Error("handoffConfig not set correctly")
+		}
+		if sr.cooldownDuration != 30*time.Minute {
+			t.Errorf("cooldownDuration = %v, want 30m", sr.cooldownDuration)
 		}
 	})
 }

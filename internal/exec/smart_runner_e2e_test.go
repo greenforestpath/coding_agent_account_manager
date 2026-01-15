@@ -13,6 +13,7 @@ import (
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/authfile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/config"
+	caamdb "github.com/Dicklesworthstone/coding_agent_account_manager/internal/db"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/notify"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/profile"
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/provider"
@@ -82,6 +83,12 @@ func TestSmartRunner_E2E(t *testing.T) {
 	createProfile("backup")
 	
 	vault := authfile.NewVault(vaultDir)
+
+	// Setup Temp DB
+	dbPath := filepath.Join(rootDir, "caam.db")
+	db, err := caamdb.OpenAt(dbPath)
+	require.NoError(t, err)
+	defer db.Close()
 	
 	// Mock ExecCommand
 	originalExec := ExecCommand
@@ -113,14 +120,14 @@ func TestSmartRunner_E2E(t *testing.T) {
 	
 	// SmartRunner needs rotation selector
 	// Selector needs health store and db
-	// We can use nil DB and empty health store
-	selector := rotation.NewSelector(rotation.AlgorithmRoundRobin, nil, nil)
+	selector := rotation.NewSelector(rotation.AlgorithmRoundRobin, nil, db)
 	
 	runner := &Runner{}
 	
 	opts := SmartRunnerOptions{
 		HandoffConfig: &cfg,
 		Vault:         vault,
+		DB:            db,
 		Rotation:      selector,
 		Notifier:      notifier,
 	}
@@ -176,6 +183,19 @@ h.EndStep("Setup")
 		}
 	}
 	assert.True(t, foundSwitch, "Did not notify about switch")
+
+	// Check DB for Activation Event
+	activations, err := db.GetEvents("claude", "active", time.Now().Add(-1*time.Hour), 10)
+	require.NoError(t, err)
+	assert.NotEmpty(t, activations, "Should have logged activation event")
+	assert.Equal(t, caamdb.EventActivate, activations[0].Type)
+
+	// Check DB for Wrap Session
+	sessions, err := db.GetWrapSessions("claude", time.Now().Add(-1*time.Hour), 10)
+	require.NoError(t, err)
+	assert.NotEmpty(t, sessions, "Should have recorded wrap session")
+	assert.Equal(t, "backup", sessions[0].ProfileName, "Session should record final profile")
+	assert.True(t, sessions[0].RateLimitHit, "Session should mark rate limit hit")
 	
 	h.EndStep("Verify")
 }
