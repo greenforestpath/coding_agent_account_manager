@@ -266,17 +266,6 @@ func (m *Monitor) doRefresh(ctx context.Context, provider, profile string) {
 // ForceRefresh triggers an immediate refresh for a specific profile.
 // This respects the MaxConcurrent semaphore to prevent overwhelming the system.
 func (m *Monitor) ForceRefresh(ctx context.Context, provider, profile string) error {
-	// Verify profile exists
-	p := m.pool.GetProfile(provider, profile)
-	if p == nil {
-		return fmt.Errorf("profile %s/%s not found", provider, profile)
-	}
-
-	// Check if already refreshing
-	if p.Status == PoolStatusRefreshing {
-		return fmt.Errorf("profile %s/%s already refreshing", provider, profile)
-	}
-
 	// Acquire semaphore slot (blocking, with context cancellation)
 	select {
 	case m.semaphore <- struct{}{}:
@@ -286,11 +275,24 @@ func (m *Monitor) ForceRefresh(ctx context.Context, provider, profile string) er
 	}
 	defer func() { <-m.semaphore }()
 
+	// Try to mark as refreshing. This checks existence AND current status atomically.
+	// We do this AFTER acquiring the semaphore to ensure we don't hold the lock
+	// while waiting for the semaphore, but also to prevent races where another
+	// routine starts refreshing while we wait.
+	if !m.pool.TryMarkRefreshing(provider, profile) {
+		// Need to distinguish "not found" vs "already refreshing"
+		p := m.pool.GetProfile(provider, profile)
+		if p == nil {
+			return fmt.Errorf("profile %s/%s not found", provider, profile)
+		}
+		return fmt.Errorf("profile %s/%s already refreshing", provider, profile)
+	}
+
 	// Perform refresh (synchronous)
 	m.doRefresh(ctx, provider, profile)
 
 	// Check result
-	p = m.pool.GetProfile(provider, profile)
+	p := m.pool.GetProfile(provider, profile)
 	if p != nil && p.Status == PoolStatusError {
 		return fmt.Errorf("refresh failed: %s", p.ErrorMessage)
 	}
