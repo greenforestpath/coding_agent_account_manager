@@ -164,7 +164,7 @@ func (s *Selector) selectRandom(tool string, profiles []string) (*Result, error)
 			remaining := s.cooldownRemaining(tool, p, now)
 			inCooldown = append(inCooldown, ProfileScore{
 				Name:    p,
-				Score:   -1000,
+				Score:   -10000,
 				Reasons: []Reason{{Text: fmt.Sprintf("In cooldown (%s remaining)", formatDuration(remaining)), Positive: false}},
 			})
 		} else {
@@ -223,7 +223,7 @@ func (s *Selector) selectRoundRobin(tool string, profiles []string, currentProfi
 			remaining := s.cooldownRemaining(tool, p, now)
 			alternatives = append(alternatives, ProfileScore{
 				Name:    p,
-				Score:   -1000,
+				Score:   -10000,
 				Reasons: []Reason{{Text: fmt.Sprintf("In cooldown (%s remaining)", formatDuration(remaining)), Positive: false}},
 			})
 		}

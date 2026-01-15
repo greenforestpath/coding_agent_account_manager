@@ -275,6 +275,16 @@ func (m *Monitor) ForceRefresh(ctx context.Context, provider, profile string) er
 	}
 	defer func() { <-m.semaphore }()
 
+	// Participate in WaitGroup for graceful shutdown
+	m.mu.Lock()
+	if m.stopping {
+		m.mu.Unlock()
+		return fmt.Errorf("monitor is stopping")
+	}
+	m.refreshWg.Add(1)
+	m.mu.Unlock()
+	defer m.refreshWg.Done()
+
 	// Try to mark as refreshing. This checks existence AND current status atomically.
 	// We do this AFTER acquiring the semaphore to ensure we don't hold the lock
 	// while waiting for the semaphore, but also to prevent races where another

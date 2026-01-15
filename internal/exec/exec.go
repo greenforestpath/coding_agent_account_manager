@@ -54,6 +54,11 @@ type RunOptions struct {
 	// RateLimitDelay debounces the rate limit callback to avoid rapid triggers.
 	// If zero, the callback fires immediately.
 	RateLimitDelay time.Duration
+
+	// UseGlobalEnv disables directory isolation (HOME, etc.), forcing the tool
+	// to use the global user environment. This is required for vault-based
+	// auth file swapping (caam run).
+	UseGlobalEnv bool
 }
 
 // ExitCodeError wraps a process exit code.
@@ -77,9 +82,13 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 	}
 
 	// Get provider environment
-	providerEnv, err := opts.Provider.Env(ctx, opts.Profile)
-	if err != nil {
-		return fmt.Errorf("get provider env: %w", err)
+	var providerEnv map[string]string
+	var err error
+	if !opts.UseGlobalEnv {
+		providerEnv, err = opts.Provider.Env(ctx, opts.Profile)
+		if err != nil {
+			return fmt.Errorf("get provider env: %w", err)
+		}
 	}
 
 	// Build command

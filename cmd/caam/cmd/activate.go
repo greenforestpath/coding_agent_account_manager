@@ -138,13 +138,11 @@ func runActivate(cmd *cobra.Command, args []string) error {
 	needDB := spmCfg.Analytics.Enabled || spmCfg.Stealth.Cooldown.Enabled || spmCfg.Stealth.Rotation.Enabled || autoSelect
 	var db *caamdb.DB
 	if needDB {
-		db, err = caamdb.Open()
+		db, err = getDB()
 		if err != nil {
 			if !jsonOutput {
 				fmt.Printf("Warning: could not open database: %v\n", err)
 			}
-		} else {
-			defer db.Close()
 		}
 	}
 

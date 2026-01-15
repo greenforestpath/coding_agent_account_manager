@@ -45,6 +45,7 @@ var (
 	registry     *provider.Registry
 	cfg          *config.Config
 	runner       *exec.Runner
+	globalDB     *caamdb.DB
 )
 
 // Tools supported for auth file swapping
@@ -52,6 +53,22 @@ var tools = map[string]func() authfile.AuthFileSet{
 	"codex":  authfile.CodexAuthFiles,
 	"claude": authfile.ClaudeAuthFiles,
 	"gemini": authfile.GeminiAuthFiles,
+}
+
+// getDB returns the global database connection, initializing it if necessary.
+func getDB() (*caamdb.DB, error) {
+	targetPath := filepath.Clean(caamdb.DefaultPath())
+	if globalDB != nil {
+		if globalDB.Path() == targetPath {
+			return globalDB, nil
+		}
+		// Path changed (likely in tests), close old instance and reopen
+		globalDB.Close()
+		globalDB = nil
+	}
+	var err error
+	globalDB, err = caamdb.Open()
+	return globalDB, err
 }
 
 // rootCmd represents the base command.
@@ -124,6 +141,11 @@ Run 'caam' without arguments to launch the interactive TUI.`,
 		}
 
 		return nil
+	},
+	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		if globalDB != nil {
+			globalDB.Close()
+		}
 	},
 }
 
@@ -351,11 +373,10 @@ func formatIdentityDisplay(id *identity.Identity) (string, string) {
 // getCooldownString returns a formatted string showing cooldown remaining time.
 // Returns empty string if no active cooldown or if db is unavailable.
 func getCooldownString(provider, profile string, opts health.FormatOptions) string {
-	db, err := caamdb.Open()
+	db, err := getDB()
 	if err != nil {
 		return ""
 	}
-	defer db.Close()
 
 	now := time.Now()
 	cooldown, err := db.ActiveCooldown(provider, profile, now)
@@ -411,11 +432,10 @@ func checkAllProfilesCooldown(tool string) (bool, time.Duration, string) {
 		return false, 0, ""
 	}
 
-	db, err := caamdb.Open()
+	db, err := getDB()
 	if err != nil {
 		return false, 0, ""
 	}
-	defer db.Close()
 
 	now := time.Now()
 	var shortestRemaining time.Duration

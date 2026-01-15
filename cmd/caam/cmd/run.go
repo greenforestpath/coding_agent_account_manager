@@ -120,14 +120,11 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	}
 
 	// Initialize database
-	db, err := caamdb.Open()
+	db, err := getDB()
 	if err != nil {
 		// Non-fatal: cooldowns won't be recorded but execution can continue
 		fmt.Fprintf(os.Stderr, "warning: database unavailable, cooldowns will not be recorded\n")
 		db = nil
-	}
-	if db != nil {
-		defer db.Close()
 	}
 
 	// Initialize health storage
@@ -246,11 +243,12 @@ func runWrap(cmd *cobra.Command, args []string) error {
 
 	// Run
 	runOptions := exec.RunOptions{
-		Profile:  prof,
-		Provider: prov,
-		Args:     cliArgs,
-		WorkDir:  cwd,
-		Env:      nil, // Inherit
+		Profile:      prof,
+		Provider:     prov,
+		Args:         cliArgs,
+		WorkDir:      cwd,
+		Env:          nil,  // Inherit
+		UseGlobalEnv: true, // Force global environment for vault-based switching
 	}
 
 	// Handle signals - use cmd.Context() for proper context propagation
