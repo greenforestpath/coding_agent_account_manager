@@ -110,37 +110,41 @@ What Agent Mail gives:
 
 ---
 
-## Issue Tracking with bd (beads)
+## Issue Tracking with br (beads_rust)
 
-All issue tracking goes through **bd**. No other TODO systems.
+All issue tracking goes through **br**. No other TODO systems.
+
+**Note:** `br` (beads_rust) is non-invasive and never executes git commands. You must run git commands manually after `br sync --flush-only`.
 
 Key invariants:
 
 - `.beads/` is authoritative state and **must always be committed** with code changes.
-- Do not edit `.beads/*.jsonl` directly; only via `bd`.
+- Do not edit `.beads/*.jsonl` directly; only via `br`.
+
+**Note:** `br` (beads_rust) is non-invasive and never executes git commands. You must run git commands manually after `br sync --flush-only`.
 
 ### Basics
 
 Check ready work:
 ```bash
-bd ready --json
+br ready --json
 ```
 
 Create issues:
 ```bash
-bd create "Issue title" -t bug|feature|task -p 0-4 --json
-bd create "Issue title" -p 1 --deps discovered-from:caam-123 --json
+br create "Issue title" -t bug|feature|task -p 0-4 --json
+br create "Issue title" -p 1 --deps discovered-from:caam-123 --json
 ```
 
 Update:
 ```bash
-bd update caam-42 --status in_progress --json
-bd update caam-42 --priority 1 --json
+br update caam-42 --status in_progress --json
+br update caam-42 --priority 1 --json
 ```
 
 Complete:
 ```bash
-bd close caam-42 --reason "Completed" --json
+br close caam-42 --reason "Completed" --json
 ```
 
 Types: `bug`, `feature`, `task`, `epic`, `chore`
@@ -154,12 +158,12 @@ Priorities:
 
 ### Agent Workflow
 
-1. `bd ready` to find unblocked work.
-2. Claim: `bd update <id> --status in_progress`.
+1. `br ready` to find unblocked work.
+2. Claim: `br update <id> --status in_progress`.
 3. Implement + test.
 4. If you discover new work, create a new bead with `discovered-from:<parent-id>`.
 5. Close when done.
-6. Commit `.beads/` in the same commit as code changes.
+6. Run `br sync --flush-only` then commit `.beads/` in the same commit as code changes.
 
 **Never:**
 - Use markdown TODO lists for persistent tracking.
@@ -408,10 +412,12 @@ Comparison:
 
 ## Beads Workflow Integration
 
+**Note:** `br` (beads_rust) is non-invasive and never executes git commands. You must run git commands manually after `br sync --flush-only`.
+
 When starting a beads-tracked task:
 
 1. **Pick ready work** (Beads)
-   - `bd ready --json` → choose one item (highest priority, no blockers)
+   - `br ready --json` → choose one item (highest priority, no blockers)
 2. **Reserve edit surface** (Mail)
    - `file_reservation_paths(project_key, agent_name, ["internal/**"], ttl_seconds=3600, exclusive=true, reason="caam-123")`
 3. **Announce start** (Mail)
@@ -419,7 +425,7 @@ When starting a beads-tracked task:
 4. **Work and update**
    - Reply in-thread with progress and attach artifacts/images; keep the discussion in one thread per issue id
 5. **Complete and release**
-   - `bd close caam-123 --reason "Completed"` (Beads is status authority)
+   - `br close caam-123 --reason "Completed"` (Beads is status authority)
    - `release_file_reservations(project_key, agent_name, paths=["internal/**"])`
    - Final Mail reply: `[caam-123] Completed` with summary and links
 
@@ -443,7 +449,9 @@ Mapping cheat-sheet:
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
+   br sync --flush-only
+   git add .beads/
+   git commit -m "sync beads" --allow-empty
    git push
    git status  # MUST show "up to date with origin"
    ```
@@ -459,12 +467,152 @@ Mapping cheat-sheet:
 
 ---
 
-## Note for Codex/GPT-5.2
+---
 
-If you are Codex or GPT-5.2 (or any non-Claude agent): another agent (often Claude Code) may have made changes to the working tree since you last saw it. Before assuming your mental model of the code is correct:
+## Morph Warp Grep — AI-Powered Code Search
 
-1. Run `git status` to see uncommitted changes
-2. Run `git log --oneline -5` to see recent commits
-3. Re-read any files you plan to modify
+**Use `mcp__morph-mcp__warp_grep` for exploratory "how does X work?" questions.** An AI agent expands your query, greps the codebase, reads relevant files, and returns precise line ranges with full context.
 
-This prevents you from overwriting another agent's work or making edits based on stale context
+**Use `ripgrep` for targeted searches.** When you know exactly what you're looking for.
+
+**Use `ast-grep` for structural patterns.** When you need AST precision for matching/rewriting.
+
+### When to Use What
+
+| Scenario | Tool | Why |
+|----------|------|-----|
+| "How does profile rotation work?" | `warp_grep` | Exploratory; don't know where to start |
+| "Where is the OAuth refresh logic?" | `warp_grep` | Need to understand architecture |
+| "Find all uses of `json.Marshal`" | `ripgrep` | Targeted literal search |
+| "Find files with `fmt.Println`" | `ripgrep` | Simple pattern |
+| "Replace all `err != nil` checks" | `ast-grep` | Structural refactor |
+
+### warp_grep Usage
+
+```
+mcp__morph-mcp__warp_grep(
+  repoPath: "/data/projects/coding_agent_account_manager",
+  query: "How does the profile rotation scoring algorithm work?"
+)
+```
+
+Returns structured results with file paths, line ranges, and extracted code snippets.
+
+### Anti-Patterns
+
+- **Don't** use `warp_grep` to find a specific function name → use `ripgrep`
+- **Don't** use `ripgrep` to understand "how does X work" → wastes time with manual reads
+- **Don't** use `ripgrep` for codemods → risks collateral edits
+
+---
+
+## cass — Cross-Agent Session Search
+
+`cass` indexes prior agent conversations (Claude Code, Codex, Cursor, Gemini, ChatGPT, etc.) so we can reuse solved problems.
+
+**CRITICAL: Never run bare `cass` (TUI). Always use `--robot` or `--json`.**
+
+### Commands
+
+```bash
+cass health                                      # Check system status
+cass search "profile rotation" --robot --limit 5
+cass view /path/to/session.jsonl -n 42 --json
+cass expand /path/to/session.jsonl -n 42 -C 3 --json
+cass capabilities --json
+cass robot-docs guide
+```
+
+### Tips
+
+- Use `--fields minimal` for lean output
+- Filter by agent with `--agent`
+- Use `--days N` to limit to recent history
+- stdout is data-only, stderr is diagnostics; exit code 0 means success
+
+Treat cass as a way to avoid re-solving problems other agents already handled.
+
+<!-- bv-agent-instructions-v1 -->
+
+---
+
+## Beads Workflow Integration
+
+This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
+
+### Essential Commands
+
+```bash
+# View issues (launches TUI - avoid in automated sessions)
+bv
+
+# CLI commands for agents (use these instead)
+br ready              # Show issues ready to work (no blockers)
+br list --status=open # All open issues
+br show <id>          # Full issue details with dependencies
+br create --title="..." --type=task --priority=2
+br update <id> --status=in_progress
+br close <id> --reason="Completed"
+br close <id1> <id2>  # Close multiple issues at once
+br sync --flush-only  # Export to JSONL
+git add .beads/       # Stage beads changes
+git commit -m "..."   # Commit beads state
+```
+
+### Workflow Pattern
+
+1. **Start**: Run `br ready` to find actionable work
+2. **Claim**: Use `br update <id> --status=in_progress`
+3. **Work**: Implement the task
+4. **Complete**: Use `br close <id>`
+5. **Sync**: Always run `br sync --flush-only` then `git add .beads/ && git commit` at session end
+
+### Key Concepts
+
+- **Dependencies**: Issues can block other issues. `br ready` shows only unblocked work.
+- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
+- **Types**: task, bug, feature, epic, question, docs
+- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
+
+### Session Protocol
+
+**Before ending any session, run this checklist:**
+
+```bash
+git status              # Check what changed
+git add <files>         # Stage code changes
+br sync --flush-only    # Export beads to JSONL
+git add .beads/         # Stage beads changes
+git commit -m "..."     # Commit code and beads
+git push                # Push to remote
+```
+
+### Best Practices
+
+- Check `br ready` at session start to find available work
+- Update status as you work (in_progress → closed)
+- Create new issues with `br create` when you discover tasks
+- Use descriptive titles and set appropriate priority/type
+- Always `br sync --flush-only` then commit `.beads/` before ending session
+
+<!-- end-bv-agent-instructions -->
+
+---
+
+Note for Codex/GPT-5.2:
+
+You constantly bother me and stop working with concerned questions that look similar to this:
+
+```
+Unexpected changes (need guidance)
+
+- Working tree still shows edits I did not make in Cargo.toml, Cargo.lock, src/cli/commands/upgrade.rs, src/storage/sqlite.rs, tests/conformance.rs, tests/storage_deps.rs. Please advise whether to keep/commit/revert these before any further work. I did not touch them.
+
+Next steps (pick one)
+
+1. Decide how to handle the unrelated modified files above so we can resume cleanly.
+2. Triage beads_rust-orko (clippy/cargo warnings) and beads_rust-ydqr (rustfmt failures).
+3. If you want a full suite run later, fix conformance/clippy blockers and re‑run cargo test --all.
+```
+
+NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into think YOU made the changes and simply don't recall it for some reason.
