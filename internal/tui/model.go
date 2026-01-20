@@ -658,13 +658,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		// Forward spinner tick messages to panels with active spinners.
 		var cmds []tea.Cmd
-		if m.usagePanel != nil && m.usagePanel.loading {
+		if m.usagePanel != nil && m.usagePanel.loading && m.usagePanel.Visible() {
 			_, cmd := m.usagePanel.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 		}
-		if m.syncPanel != nil && (m.syncPanel.loading || m.syncPanel.syncing) {
+		if m.syncPanel != nil && (m.syncPanel.loading || m.syncPanel.syncing) && m.syncPanel.Visible() {
 			_, cmd := m.syncPanel.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)

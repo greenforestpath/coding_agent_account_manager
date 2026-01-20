@@ -242,7 +242,7 @@ func TestSpinnerView(t *testing.T) {
 			contains: []string{"Loading data..."},
 		},
 		{
-			name: "NoColor spinner shows static indicator",
+			name: "NoColor spinner shows animated indicator",
 			opts: SpinnerOptions{
 				Message: "Loading...",
 				NoColor: true,
@@ -303,7 +303,7 @@ func TestSpinnerInit(t *testing.T) {
 			expectCmd: true,
 		},
 		{
-			name:      "NoColor spinner returns nil",
+			name:      "NoColor spinner returns command",
 			opts:      SpinnerOptions{Message: "Loading", NoColor: true},
 			expectCmd: true,
 		},
@@ -340,7 +340,7 @@ func TestSpinnerTick(t *testing.T) {
 			expectCmd: true,
 		},
 		{
-			name:      "NoColor spinner returns nil",
+			name:      "NoColor spinner returns command",
 			opts:      SpinnerOptions{Message: "Loading", NoColor: true},
 			expectCmd: true,
 		},

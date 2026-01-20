@@ -2,10 +2,12 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/testutil"
 )
@@ -471,6 +473,45 @@ func TestE2E_ProfilesLoadedMessage(t *testing.T) {
 		"initial_count": initialCount,
 		"final_count":   len(m.profiles["claude"]) + len(m.profiles["codex"]),
 	})
+}
+
+// TestE2E_LoadingSpinnerVisible ensures the loading spinner renders during async operations.
+func TestE2E_LoadingSpinnerVisible(t *testing.T) {
+	h := testutil.NewHarness(t)
+	defer h.Close()
+
+	h.Log.SetStep("test_loading_spinner")
+	t.Setenv("NO_COLOR", "1")
+
+	m := New()
+	m.width = 120
+	m.height = 40
+
+	if m.usagePanel == nil {
+		t.Fatal("usage panel not initialized")
+	}
+	m.usagePanel.Toggle()
+	spinnerCmd := m.usagePanel.SetLoading(true)
+	if spinnerCmd != nil {
+		msg := spinnerCmd()
+		updated, _ := m.Update(msg)
+		m = updated.(Model)
+	}
+
+	view := ansi.Strip(m.View())
+	frames := []string{"|", "/", "-", "\\"}
+	found := false
+	for _, frame := range frames {
+		if strings.Contains(view, frame+" Loading usage stats") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected spinner in view, got: %s", view)
+	}
+
+	h.Log.Info("Loading spinner verified")
 }
 
 // TestE2E_EmptyProviderHandling tests handling of providers with no profiles.

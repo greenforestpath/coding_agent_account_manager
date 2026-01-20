@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestSyncPanel_View_Empty(t *testing.T) {
@@ -87,6 +88,26 @@ func TestSyncPanel_SetLoading(t *testing.T) {
 	}
 }
 
+func TestSyncPanel_LoadingSnapshot(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	theme := NewTheme(ThemeOptionsFromEnv())
+	p := NewSyncPanelWithTheme(theme)
+	p.SetLoading(true)
+
+	got := normalizeSyncSnapshot(p.View())
+	const want = "" +
+		"\n\n" +
+		"   Sync Pool\n" +
+		"   Status: Not configured\n" +
+		"\n" +
+		"   | Loading sync state...\n\n"
+
+	if got != want {
+		t.Fatalf("loading snapshot mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 func TestSyncPanel_SetSyncing(t *testing.T) {
 	p := NewSyncPanel()
 	p.SetSyncing(true)
@@ -140,6 +161,15 @@ func TestSyncPanel_SelectedMachine(t *testing.T) {
 	if m := nilPanel.SelectedMachine(); m != nil {
 		t.Fatal("SelectedMachine on nil receiver should return nil")
 	}
+}
+
+func normalizeSyncSnapshot(s string) string {
+	plain := ansi.Strip(s)
+	lines := strings.Split(plain, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Note: TestGetStatusIcon, TestFormatTimeAgo, TestTruncateString, TestToMachineInfo

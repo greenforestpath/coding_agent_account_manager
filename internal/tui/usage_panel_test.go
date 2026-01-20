@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestUsagePanel_View_Empty(t *testing.T) {
@@ -95,6 +96,26 @@ func TestUsagePanel_TimeRangeLabel(t *testing.T) {
 	}
 }
 
+func TestUsagePanel_LoadingSnapshot(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	theme := NewTheme(ThemeOptionsFromEnv())
+	u := NewUsagePanelWithTheme(theme)
+	u.SetLoading(true)
+
+	got := normalizeUsageSnapshot(u.View())
+	const want = "" +
+		"\n\n" +
+		"   Usage Statistics\n" +
+		"   Last 7 days\n" +
+		"\n" +
+		"   | Loading usage stats…\n\n"
+
+	if got != want {
+		t.Fatalf("loading snapshot mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 func TestUsagePanel_RenderBar(t *testing.T) {
 	u := NewUsagePanel()
 
@@ -137,4 +158,13 @@ func TestUsagePanel_NilReceiver(t *testing.T) {
 	u.SetStats(nil)
 	_ = u.Visible()
 	_ = u.TimeRange()
+}
+
+func normalizeUsageSnapshot(s string) string {
+	plain := ansi.Strip(s)
+	lines := strings.Split(plain, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " ")
+	}
+	return strings.Join(lines, "\n")
 }

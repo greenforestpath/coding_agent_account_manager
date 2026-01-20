@@ -35,6 +35,9 @@ func TestThemeOptionsFromEnv_NoColor(t *testing.T) {
 func TestThemeOptionsFromEnv_Overrides(t *testing.T) {
 	unsetEnv(t, "NO_COLOR")
 	unsetEnv(t, "TERM")
+	unsetEnv(t, "CAAM_TUI_REDUCED_MOTION")
+	unsetEnv(t, "CAAM_REDUCED_MOTION")
+	unsetEnv(t, "REDUCED_MOTION")
 	t.Setenv("CAAM_TUI_THEME", "light")
 	t.Setenv("CAAM_TUI_CONTRAST", "high")
 
@@ -47,6 +50,19 @@ func TestThemeOptionsFromEnv_Overrides(t *testing.T) {
 	}
 	if opts.NoColor {
 		t.Fatal("expected NoColor=false when NO_COLOR not set")
+	}
+}
+
+func TestThemeOptionsFromEnv_ReducedMotion(t *testing.T) {
+	unsetEnv(t, "NO_COLOR")
+	unsetEnv(t, "TERM")
+	unsetEnv(t, "CAAM_TUI_THEME")
+	unsetEnv(t, "CAAM_TUI_CONTRAST")
+	t.Setenv("CAAM_TUI_REDUCED_MOTION", "1")
+
+	opts := ThemeOptionsFromEnv()
+	if !opts.ReducedMotion {
+		t.Fatal("expected ReducedMotion=true when CAAM_TUI_REDUCED_MOTION is set")
 	}
 }
 
