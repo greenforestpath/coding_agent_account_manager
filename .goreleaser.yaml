@@ -15,7 +15,7 @@ before:
         "date": "{{ .Date }}",
         "go_version": "$go_version"
       }
-      EOF
+EOF
 
 builds:
   - id: caam
