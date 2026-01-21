@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/health"
+	"github.com/Dicklesworthstone/coding_agent_account_manager/internal/identity"
 	"github.com/spf13/cobra"
 )
 
@@ -532,5 +533,76 @@ func TestCommandUsageStrings(t *testing.T) {
 		if tc.cmd.Use != tc.expected {
 			t.Errorf("Command Use mismatch: expected %q, got %q", tc.expected, tc.cmd.Use)
 		}
+	}
+}
+
+// TestFormatIdentityDisplay_ClaudeEmptyEmail tests that Claude identity
+// shows "n/a" for email since it's not available in current auth format.
+// See: docs/CLAUDE_AUTH_INVENTORY.md (CLAUDE-001, CLAUDE-002)
+func TestFormatIdentityDisplay_ClaudeEmptyEmail(t *testing.T) {
+	tests := []struct {
+		name      string
+		identity  *identity.Identity
+		wantEmail string
+		wantPlan  string
+	}{
+		{
+			name:      "nil identity",
+			identity:  nil,
+			wantEmail: "unknown",
+			wantPlan:  "unknown",
+		},
+		{
+			name: "claude with email (backwards compat)",
+			identity: &identity.Identity{
+				Provider: "claude",
+				Email:    "claude@example.com",
+				PlanType: "pro",
+			},
+			wantEmail: "claude@example.com",
+			wantPlan:  "Pro", // FormatPlanType capitalizes
+		},
+		{
+			name: "claude without email (current format)",
+			identity: &identity.Identity{
+				Provider: "claude",
+				Email:    "", // Empty - not available
+				PlanType: "claude_pro_2025",
+			},
+			wantEmail: "n/a", // Should be "n/a" for Claude, not "unknown"
+			wantPlan:  "claude_pro_2025",
+		},
+		{
+			name: "codex without email",
+			identity: &identity.Identity{
+				Provider: "codex",
+				Email:    "",
+				PlanType: "team",
+			},
+			wantEmail: "unknown", // Codex still shows "unknown"
+			wantPlan:  "Team",    // FormatPlanType capitalizes
+		},
+		{
+			name: "gemini with email",
+			identity: &identity.Identity{
+				Provider: "gemini",
+				Email:    "user@google.com",
+				PlanType: "enterprise",
+			},
+			wantEmail: "user@google.com",
+			wantPlan:  "Enterprise", // FormatPlanType capitalizes
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotEmail, gotPlan := formatIdentityDisplay(tc.identity)
+			if gotEmail != tc.wantEmail {
+				t.Errorf("formatIdentityDisplay() email = %q, want %q", gotEmail, tc.wantEmail)
+			}
+			if gotPlan != tc.wantPlan {
+				t.Errorf("formatIdentityDisplay() plan = %q, want %q", gotPlan, tc.wantPlan)
+			}
+		})
 	}
 }

@@ -358,9 +358,16 @@ func formatIdentityDisplay(id *identity.Identity) (string, string) {
 	if id == nil {
 		return email, plan
 	}
-	if strings.TrimSpace(id.Email) != "" {
+
+	// For Claude, email/accountId are no longer available in current auth files.
+	// Show "n/a" instead of "unknown" to indicate this is expected, not an error.
+	// See: docs/CLAUDE_AUTH_INVENTORY.md (CLAUDE-001, CLAUDE-002)
+	if id.Provider == "claude" && strings.TrimSpace(id.Email) == "" {
+		email = "n/a"
+	} else if strings.TrimSpace(id.Email) != "" {
 		email = id.Email
 	}
+
 	if strings.TrimSpace(id.PlanType) != "" {
 		formatted := health.FormatPlanType(id.PlanType)
 		if formatted != "" {
