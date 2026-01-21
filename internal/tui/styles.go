@@ -451,6 +451,13 @@ type Styles struct {
 
 	// Input styles
 	InputCursor lipgloss.Style
+
+	// Search bar styles
+	SearchBar       lipgloss.Style
+	SearchPrompt    lipgloss.Style
+	SearchQuery     lipgloss.Style
+	SearchCursor    lipgloss.Style
+	SearchMatchInfo lipgloss.Style
 }
 
 // DefaultStyles returns the default style configuration.
@@ -572,6 +579,28 @@ func NewStyles(theme Theme) Styles {
 		InputCursor: lipgloss.NewStyle().
 			Foreground(p.Accent).
 			Bold(true),
+
+		SearchBar: lipgloss.NewStyle().
+			Padding(0, 1).
+			Background(p.Surface).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.Accent).
+			MarginBottom(1),
+
+		SearchPrompt: lipgloss.NewStyle().
+			Foreground(p.Accent).
+			Bold(true),
+
+		SearchQuery: lipgloss.NewStyle().
+			Foreground(p.Text),
+
+		SearchCursor: lipgloss.NewStyle().
+			Foreground(p.Accent).
+			Bold(true),
+
+		SearchMatchInfo: lipgloss.NewStyle().
+			Foreground(p.Muted).
+			Italic(true),
 	}
 }
 
