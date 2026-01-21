@@ -66,7 +66,7 @@ var authDetectCmd = &cobra.Command{
 	Long: `Detect existing authentication files in standard system locations.
 
 This scans for existing auth files from direct CLI tool usage:
-  - Claude: ~/.claude.json, ~/.config/claude-code/auth.json
+  - Claude: ~/.claude.json, ~/.config/claude-code/auth.json, $CLAUDE_CONFIG_DIR/auth.json
   - Codex: ~/.codex/auth.json
   - Gemini: ~/.gemini/settings.json, ~/.gemini/.env, gcloud ADC
 

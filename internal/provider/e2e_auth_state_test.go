@@ -570,6 +570,12 @@ func TestE2E_ProviderEnvIsolation(t *testing.T) {
 					t.Errorf("claude: expected XDG_CONFIG_HOME=%s, got %s", xdgConfig, xdg)
 				}
 			}
+			if cfg, ok := env["CLAUDE_CONFIG_DIR"]; ok {
+				expected := filepath.Join(xdgConfig, "claude-code")
+				if cfg != expected {
+					t.Errorf("claude: expected CLAUDE_CONFIG_DIR=%s, got %s", expected, cfg)
+				}
+			}
 		case "codex":
 			if ch, ok := env["CODEX_HOME"]; ok {
 				if ch != codexHome {

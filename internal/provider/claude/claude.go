@@ -6,20 +6,22 @@
 // - Auth state stored in:
 //   - ~/.claude/.credentials.json (primary OAuth credentials)
 //   - ~/.claude.json (legacy OAuth session state)
-//   - ~/.config/claude-code/auth.json (auth credentials)
+//   - ~/.config/claude-code/auth.json (auth credentials; or $CLAUDE_CONFIG_DIR/auth.json)
 //   - ~/.claude/settings.json (user settings)
 //   - Project .claude/* files
 //
 // Context isolation for caam:
 // - Set HOME to pseudo-home directory
 // - Set XDG_CONFIG_HOME to pseudo-xdg_config directory
+// - Set CLAUDE_CONFIG_DIR to profile-scoped claude-code config dir
 // - This makes these become profile-scoped:
 //   - ${XDG_CONFIG_HOME}/claude-code/auth.json
+//   - ${CLAUDE_CONFIG_DIR}/auth.json
 //   - ${HOME}/.claude.json
 //   - ${HOME}/.claude/settings.json
 //
 // Auth file swapping (PRIMARY use case):
-// - Backup ~/.claude.json and ~/.config/claude-code/auth.json after logging in
+// - Backup ~/.claude.json and ~/.config/claude-code/auth.json (or $CLAUDE_CONFIG_DIR/auth.json) after logging in
 // - Restore to instantly switch Claude Max accounts without /login flows
 //
 // API key mode (secondary):
@@ -83,6 +85,24 @@ func xdgConfigHome() string {
 	return filepath.Join(homeDir, ".config")
 }
 
+// claudeConfigDir returns the Claude config directory for the current user.
+// If CLAUDE_CONFIG_DIR is set, it takes precedence; otherwise fallback to
+// XDG_CONFIG_HOME/claude-code.
+func claudeConfigDir() string {
+	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+		return cfg
+	}
+	return filepath.Join(xdgConfigHome(), "claude-code")
+}
+
+func claudeConfigDirForProfile(prof *profile.Profile) string {
+	return filepath.Join(prof.XDGConfigPath(), "claude-code")
+}
+
+func claudeAuthPathForProfile(prof *profile.Profile) string {
+	return filepath.Join(claudeConfigDirForProfile(prof), "auth.json")
+}
+
 // AuthFiles returns the auth file specifications for Claude Code.
 // This is the key method for auth file backup/restore.
 func (p *Provider) AuthFiles() []provider.AuthFileSpec {
@@ -100,8 +120,8 @@ func (p *Provider) AuthFiles() []provider.AuthFileSpec {
 			Required:    false,
 		},
 		{
-			Path:        filepath.Join(xdgConfigHome(), "claude-code", "auth.json"),
-			Description: "Claude Code auth credentials",
+			Path:        filepath.Join(claudeConfigDir(), "auth.json"),
+			Description: "Claude Code auth credentials (CLAUDE_CONFIG_DIR or XDG_CONFIG_HOME)",
 			Required:    false, // May not exist in all setups
 		},
 		{
@@ -127,7 +147,7 @@ func (p *Provider) PrepareProfile(ctx context.Context, prof *profile.Profile) er
 	}
 
 	// Create claude-code directory under xdg_config
-	claudeCodeDir := filepath.Join(xdgConfig, "claude-code")
+	claudeCodeDir := claudeConfigDirForProfile(prof)
 	if err := os.MkdirAll(claudeCodeDir, 0700); err != nil {
 		return fmt.Errorf("create claude-code dir: %w", err)
 	}
@@ -222,8 +242,9 @@ exit 1
 // Env returns the environment variables for running Claude in this profile's context.
 func (p *Provider) Env(ctx context.Context, prof *profile.Profile) (map[string]string, error) {
 	env := map[string]string{
-		"HOME":            prof.HomePath(),
-		"XDG_CONFIG_HOME": prof.XDGConfigPath(),
+		"HOME":              prof.HomePath(),
+		"XDG_CONFIG_HOME":   prof.XDGConfigPath(),
+		"CLAUDE_CONFIG_DIR": claudeConfigDirForProfile(prof),
 	}
 	return env, nil
 }
@@ -300,7 +321,7 @@ func (p *Provider) loginWithAPIKey(ctx context.Context, prof *profile.Profile) e
 func (p *Provider) Logout(ctx context.Context, prof *profile.Profile) error {
 	// Remove auth files
 	authPaths := []string{
-		filepath.Join(prof.XDGConfigPath(), "claude-code", "auth.json"),
+		claudeAuthPathForProfile(prof),
 		filepath.Join(prof.HomePath(), ".claude.json"),
 		filepath.Join(prof.HomePath(), ".claude", ".credentials.json"),
 		filepath.Join(prof.HomePath(), ".claude", "settings.json"),
@@ -322,7 +343,7 @@ func (p *Provider) Status(ctx context.Context, prof *profile.Profile) (*provider
 	}
 
 	// Check if auth.json exists
-	authPath := filepath.Join(prof.XDGConfigPath(), "claude-code", "auth.json")
+	authPath := claudeAuthPathForProfile(prof)
 	if _, err := os.Stat(authPath); err == nil {
 		status.LoggedIn = true
 	}
@@ -389,7 +410,7 @@ func (p *Provider) ValidateProfile(ctx context.Context, prof *profile.Profile) e
 // Locations checked:
 // - ~/.claude/.credentials.json (primary OAuth credentials)
 // - ~/.claude.json (legacy OAuth session state)
-// - ~/.config/claude-code/auth.json (current auth credentials)
+// - ~/.config/claude-code/auth.json (current auth credentials; or $CLAUDE_CONFIG_DIR/auth.json)
 func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
 	detection := &provider.AuthDetection{
 		Provider:  p.ID(),
@@ -415,8 +436,8 @@ func (p *Provider) DetectExistingAuth() (*provider.AuthDetection, error) {
 			description: "Claude Code OAuth session state (legacy location)",
 		},
 		{
-			path:        filepath.Join(xdgConfigHome(), "claude-code", "auth.json"),
-			description: "Claude Code auth credentials (current location)",
+			path:        filepath.Join(claudeConfigDir(), "auth.json"),
+			description: "Claude Code auth credentials (CLAUDE_CONFIG_DIR or XDG_CONFIG_HOME)",
 		},
 		{
 			path:        filepath.Join(homeDir, ".claude", "settings.json"),
@@ -580,7 +601,7 @@ func (p *Provider) ImportAuth(ctx context.Context, sourcePath string, prof *prof
 
 	case "auth.json":
 		// Copy to profile's XDG config claude-code directory
-		targetDir := filepath.Join(prof.XDGConfigPath(), "claude-code")
+		targetDir := claudeConfigDirForProfile(prof)
 		if err := os.MkdirAll(targetDir, 0700); err != nil {
 			return nil, fmt.Errorf("create claude-code dir: %w", err)
 		}
@@ -594,7 +615,7 @@ func (p *Provider) ImportAuth(ctx context.Context, sourcePath string, prof *prof
 		// Try to copy to a reasonable location based on the source
 		if filepath.Base(filepath.Dir(sourcePath)) == "claude-code" {
 			// Source is from claude-code directory
-			targetDir := filepath.Join(prof.XDGConfigPath(), "claude-code")
+			targetDir := claudeConfigDirForProfile(prof)
 			if err := os.MkdirAll(targetDir, 0700); err != nil {
 				return nil, fmt.Errorf("create claude-code dir: %w", err)
 			}
@@ -722,7 +743,7 @@ func (p *Provider) validateTokenPassive(ctx context.Context, prof *profile.Profi
 
 	// Check auth files exist
 	claudeJsonPath := filepath.Join(prof.HomePath(), ".claude.json")
-	authJsonPath := filepath.Join(prof.XDGConfigPath(), "claude-code", "auth.json")
+	authJsonPath := claudeAuthPathForProfile(prof)
 	credentialsPath := filepath.Join(prof.HomePath(), ".claude", ".credentials.json")
 	settingsPath := filepath.Join(prof.HomePath(), ".claude", "settings.json")
 

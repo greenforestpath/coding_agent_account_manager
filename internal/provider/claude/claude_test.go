@@ -86,6 +86,7 @@ func TestSupportedAuthModes(t *testing.T) {
 // =============================================================================
 
 func TestAuthFiles(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	t.Run("returns four auth file specs", func(t *testing.T) {
 		p := New()
 		files := p.AuthFiles()
@@ -147,10 +148,30 @@ func TestAuthFiles(t *testing.T) {
 		}
 	})
 
-	t.Run("uses XDG_CONFIG_HOME if set", func(t *testing.T) {
+	t.Run("uses CLAUDE_CONFIG_DIR if set", func(t *testing.T) {
+		originalClaude := os.Getenv("CLAUDE_CONFIG_DIR")
 		originalXDG := os.Getenv("XDG_CONFIG_HOME")
+		defer os.Setenv("CLAUDE_CONFIG_DIR", originalClaude)
 		defer os.Setenv("XDG_CONFIG_HOME", originalXDG)
 
+		os.Setenv("CLAUDE_CONFIG_DIR", "/custom/claude")
+		os.Unsetenv("XDG_CONFIG_HOME")
+		p := New()
+		files := p.AuthFiles()
+
+		expected := "/custom/claude/auth.json"
+		if files[2].Path != expected {
+			t.Errorf("AuthFiles()[2].Path = %q, want %q", files[2].Path, expected)
+		}
+	})
+
+	t.Run("uses XDG_CONFIG_HOME if set", func(t *testing.T) {
+		originalClaude := os.Getenv("CLAUDE_CONFIG_DIR")
+		originalXDG := os.Getenv("XDG_CONFIG_HOME")
+		defer os.Setenv("CLAUDE_CONFIG_DIR", originalClaude)
+		defer os.Setenv("XDG_CONFIG_HOME", originalXDG)
+
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
 		os.Setenv("XDG_CONFIG_HOME", "/custom/config")
 		p := New()
 		files := p.AuthFiles()
@@ -162,9 +183,12 @@ func TestAuthFiles(t *testing.T) {
 	})
 
 	t.Run("uses default .config if XDG_CONFIG_HOME not set", func(t *testing.T) {
+		originalClaude := os.Getenv("CLAUDE_CONFIG_DIR")
 		originalXDG := os.Getenv("XDG_CONFIG_HOME")
+		defer os.Setenv("CLAUDE_CONFIG_DIR", originalClaude)
 		defer os.Setenv("XDG_CONFIG_HOME", originalXDG)
 
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
 		os.Unsetenv("XDG_CONFIG_HOME")
 		p := New()
 		files := p.AuthFiles()
@@ -434,7 +458,7 @@ func TestEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("returns exactly two env vars", func(t *testing.T) {
+	t.Run("sets CLAUDE_CONFIG_DIR", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		prof := &profile.Profile{
 			Name:     "test",
@@ -445,8 +469,30 @@ func TestEnv(t *testing.T) {
 		p := New()
 		env, _ := p.Env(context.Background(), prof)
 
-		if len(env) != 2 {
-			t.Errorf("Env() returned %d vars, want 2", len(env))
+		cfg, ok := env["CLAUDE_CONFIG_DIR"]
+		if !ok {
+			t.Fatal("CLAUDE_CONFIG_DIR not set in env")
+		}
+
+		expected := filepath.Join(prof.XDGConfigPath(), "claude-code")
+		if cfg != expected {
+			t.Errorf("CLAUDE_CONFIG_DIR = %q, want %q", cfg, expected)
+		}
+	})
+
+	t.Run("returns exactly three env vars", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		prof := &profile.Profile{
+			Name:     "test",
+			Provider: "claude",
+			BasePath: tmpDir,
+		}
+
+		p := New()
+		env, _ := p.Env(context.Background(), prof)
+
+		if len(env) != 3 {
+			t.Errorf("Env() returned %d vars, want 3", len(env))
 		}
 	})
 }
@@ -746,6 +792,41 @@ func TestXDGConfigHome(t *testing.T) {
 }
 
 // =============================================================================
+// claudeConfigDir Helper Tests
+// =============================================================================
+
+func TestClaudeConfigDir(t *testing.T) {
+	t.Run("respects CLAUDE_CONFIG_DIR env var", func(t *testing.T) {
+		originalClaude := os.Getenv("CLAUDE_CONFIG_DIR")
+		originalXDG := os.Getenv("XDG_CONFIG_HOME")
+		defer os.Setenv("CLAUDE_CONFIG_DIR", originalClaude)
+		defer os.Setenv("XDG_CONFIG_HOME", originalXDG)
+
+		os.Setenv("CLAUDE_CONFIG_DIR", "/test/claude")
+		os.Setenv("XDG_CONFIG_HOME", "/ignored")
+		result := claudeConfigDir()
+		if result != "/test/claude" {
+			t.Errorf("claudeConfigDir() = %q, want /test/claude", result)
+		}
+	})
+
+	t.Run("falls back to XDG_CONFIG_HOME/claude-code", func(t *testing.T) {
+		originalClaude := os.Getenv("CLAUDE_CONFIG_DIR")
+		originalXDG := os.Getenv("XDG_CONFIG_HOME")
+		defer os.Setenv("CLAUDE_CONFIG_DIR", originalClaude)
+		defer os.Setenv("XDG_CONFIG_HOME", originalXDG)
+
+		os.Unsetenv("CLAUDE_CONFIG_DIR")
+		os.Setenv("XDG_CONFIG_HOME", "/test/xdg")
+		result := claudeConfigDir()
+		expected := filepath.Join("/test/xdg", "claude-code")
+		if result != expected {
+			t.Errorf("claudeConfigDir() = %q, want %s", result, expected)
+		}
+	})
+}
+
+// =============================================================================
 // Integration Test
 // =============================================================================
 
@@ -793,6 +874,9 @@ func TestFullProfileLifecycle(t *testing.T) {
 	}
 	if env["XDG_CONFIG_HOME"] == "" {
 		t.Error("XDG_CONFIG_HOME should be set")
+	}
+	if env["CLAUDE_CONFIG_DIR"] == "" {
+		t.Error("CLAUDE_CONFIG_DIR should be set")
 	}
 
 	// Logout
@@ -883,6 +967,7 @@ func TestDetectExistingAuth(t *testing.T) {
 		xdg := filepath.Join(home, ".config")
 		t.Setenv("HOME", home)
 		t.Setenv("XDG_CONFIG_HOME", xdg)
+		t.Setenv("CLAUDE_CONFIG_DIR", "")
 		return home, xdg
 	}
 
@@ -957,6 +1042,33 @@ func TestDetectExistingAuth(t *testing.T) {
 
 		// Create valid auth.json
 		path := filepath.Join(dir, "auth.json")
+		data := map[string]interface{}{
+			"accessToken": "valid-token",
+		}
+		writeJSON(t, path, data)
+
+		detection, err := p.DetectExistingAuth()
+		if err != nil {
+			t.Fatalf("DetectExistingAuth() error = %v", err)
+		}
+
+		if !detection.Found {
+			t.Error("Should have found auth")
+		}
+		if detection.Primary.Path != path {
+			t.Errorf("Primary.Path = %q, want %q", detection.Primary.Path, path)
+		}
+	})
+
+	t.Run("detects auth.json (CLAUDE_CONFIG_DIR)", func(t *testing.T) {
+		home, _ := setupEnv(t)
+		p := New()
+
+		claudeConfigDir := filepath.Join(home, "claude-config")
+		t.Setenv("CLAUDE_CONFIG_DIR", claudeConfigDir)
+		os.MkdirAll(claudeConfigDir, 0700)
+
+		path := filepath.Join(claudeConfigDir, "auth.json")
 		data := map[string]interface{}{
 			"accessToken": "valid-token",
 		}

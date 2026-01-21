@@ -638,6 +638,35 @@ func TestParseGeminiExpiryDefaultPath(t *testing.T) {
 	}
 }
 
+func TestParseClaudeExpiry_UsesClaudeConfigDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	origClaude := os.Getenv("CLAUDE_CONFIG_DIR")
+	origXDG := os.Getenv("XDG_CONFIG_HOME")
+	defer os.Setenv("CLAUDE_CONFIG_DIR", origClaude)
+	defer os.Setenv("XDG_CONFIG_HOME", origXDG)
+
+	os.Setenv("CLAUDE_CONFIG_DIR", tmpDir)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "ignored"))
+
+	authPath := filepath.Join(tmpDir, "auth.json")
+	authData := `{
+		"access_token": "test_access",
+		"refresh_token": "test_refresh",
+		"expires_at": 1734523200
+	}`
+	if err := os.WriteFile(authPath, []byte(authData), 0600); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	info, err := ParseClaudeExpiry("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if info.Source != authPath {
+		t.Errorf("expected source %s, got %s", authPath, info.Source)
+	}
+}
+
 func TestParseClaudeExpiry_CredentialsFile(t *testing.T) {
 	tmpDir := t.TempDir()
 

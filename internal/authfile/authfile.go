@@ -74,13 +74,17 @@ func CodexAuthFiles() AuthFileSet {
 // Claude Code stores OAuth credentials in:
 //   - ~/.claude/.credentials.json (primary - contains claudeAiOauth with tokens)
 //   - ~/.claude.json (settings file - not auth, but backed up for completeness)
-//   - ~/.config/claude-code/auth.json (auth credentials)
+//   - ~/.config/claude-code/auth.json (auth credentials; or $CLAUDE_CONFIG_DIR/auth.json)
 //   - ~/.claude/settings.json (user settings)
 func ClaudeAuthFiles() AuthFileSet {
 	homeDir, _ := os.UserHomeDir()
-	xdgConfig := os.Getenv("XDG_CONFIG_HOME")
-	if xdgConfig == "" {
-		xdgConfig = filepath.Join(homeDir, ".config")
+	claudeConfigDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if claudeConfigDir == "" {
+		xdgConfig := os.Getenv("XDG_CONFIG_HOME")
+		if xdgConfig == "" {
+			xdgConfig = filepath.Join(homeDir, ".config")
+		}
+		claudeConfigDir = filepath.Join(xdgConfig, "claude-code")
 	}
 
 	return AuthFileSet{
@@ -100,7 +104,7 @@ func ClaudeAuthFiles() AuthFileSet {
 			},
 			{
 				Tool:        "claude",
-				Path:        filepath.Join(xdgConfig, "claude-code", "auth.json"),
+				Path:        filepath.Join(claudeConfigDir, "auth.json"),
 				Description: "Claude Code auth credentials",
 				Required:    false,
 			},

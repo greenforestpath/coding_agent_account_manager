@@ -71,21 +71,35 @@ func ParseClaudeExpiry(authDir string) (*ExpiryInfo, error) {
 			return info, nil
 		}
 
+		var authCandidates []string
+		if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+			authCandidates = append(authCandidates, filepath.Join(cfg, "auth.json"))
+		}
+
 		xdgConfig := os.Getenv("XDG_CONFIG_HOME")
 		if xdgConfig == "" {
 			xdgConfig = filepath.Join(homeDir, ".config")
 		}
-		authJsonPath := filepath.Join(xdgConfig, "claude-code", "auth.json")
+		authCandidates = append(authCandidates, filepath.Join(xdgConfig, "claude-code", "auth.json"))
 
-		info, err = parseOAuthFile(authJsonPath)
-		if err == nil {
-			info.Source = authJsonPath
-			return info, nil
+		for _, candidate := range authCandidates {
+			info, err = parseOAuthFile(candidate)
+			if err == nil {
+				info.Source = candidate
+				return info, nil
+			}
 		}
 
 		if _, statErr := os.Stat(credentialsPath); os.IsNotExist(statErr) {
 			if _, statErr2 := os.Stat(claudeJsonPath); os.IsNotExist(statErr2) {
-				if _, statErr3 := os.Stat(authJsonPath); os.IsNotExist(statErr3) {
+				missing := true
+				for _, candidate := range authCandidates {
+					if _, statErr3 := os.Stat(candidate); !os.IsNotExist(statErr3) {
+						missing = false
+						break
+					}
+				}
+				if missing {
 					return nil, ErrNoAuthFile
 				}
 			}
