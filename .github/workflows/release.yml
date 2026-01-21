@@ -43,17 +43,67 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}"
           release_json=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" "$api")
-          RELEASE_JSON="$release_json" python - <<-PY
+          parsed=$(RELEASE_JSON="$release_json" python - <<-PY
           	import json
           	import os
           	import sys
 
           	data = json.loads(os.environ.get("RELEASE_JSON", "{}"))
-          	names = {asset.get("name") for asset in data.get("assets", [])}
-          	required = {"SHA256SUMS", "SHA256SUMS.sig"}
-          	missing = sorted(required - names)
-          	if missing:
-          	    sys.stderr.write("Missing release assets: " + ", ".join(missing) + "\n")
+          	assets = data.get("assets", [])
+
+          	def find(name: str) -> str:
+          	    for asset in assets:
+          	        if asset.get("name") == name:
+          	            return asset.get("browser_download_url") or ""
+          	    return ""
+
+          	checksums_url = find("SHA256SUMS")
+          	signature_url = find("SHA256SUMS.sig")
+
+          	sample = None
+          	for asset in assets:
+          	    name = asset.get("name") or ""
+          	    if name in {"SHA256SUMS", "SHA256SUMS.sig"}:
+          	        continue
+          	    if name.endswith(".tar.gz") or name.endswith(".zip"):
+          	        sample = asset
+          	        break
+
+          	if not checksums_url or not signature_url:
+          	    sys.stderr.write("Missing SHA256SUMS or SHA256SUMS.sig assets\n")
           	    sys.exit(1)
-          	print("Release assets verified:", ", ".join(sorted(required)))
+          	if not sample:
+          	    sys.stderr.write("Missing archive asset to verify\n")
+          	    sys.exit(1)
+
+          	print(checksums_url)
+          	print(signature_url)
+          	print(sample.get("name") or "")
+          	print(sample.get("browser_download_url") or "")
           	PY
+          )
+
+          checksums_url=$(printf '%s' "$parsed" | sed -n '1p')
+          signature_url=$(printf '%s' "$parsed" | sed -n '2p')
+          sample_name=$(printf '%s' "$parsed" | sed -n '3p')
+          sample_url=$(printf '%s' "$parsed" | sed -n '4p')
+
+          tmpdir="$(mktemp -d)"
+          curl -fsSL "$checksums_url" -o "$tmpdir/SHA256SUMS"
+          curl -fsSL "$signature_url" -o "$tmpdir/SHA256SUMS.sig"
+          curl -fsSL "$sample_url" -o "$tmpdir/$sample_name"
+
+          cosign verify-blob \
+            --bundle "$tmpdir/SHA256SUMS.sig" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${tag}" \
+            "$tmpdir/SHA256SUMS"
+
+          expected=$(grep -F " $sample_name" "$tmpdir/SHA256SUMS" | awk '{print $1}' | head -1)
+          actual=$(sha256sum "$tmpdir/$sample_name" | awk '{print $1}')
+          if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+            echo "Checksum mismatch for $sample_name" >&2
+            exit 1
+          fi
+
+          echo "Release assets verified: SHA256SUMS + signature + archive checksum"

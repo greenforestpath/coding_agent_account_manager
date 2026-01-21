@@ -59,7 +59,7 @@ tui: build
 
 # Build for all platforms (requires goreleaser)
 release-snapshot:
-	goreleaser release --snapshot --clean
+	goreleaser release --snapshot --skip=sign --clean
 
 # Development setup
 dev-setup:
@@ -80,5 +80,5 @@ help:
 	@echo "  clean           - Clean build artifacts"
 	@echo "  run             - Build and run"
 	@echo "  tui             - Build and run TUI"
-	@echo "  release-snapshot - Build for all platforms"
+	@echo "  release-snapshot - Build for all platforms (skip signing)"
 	@echo "  dev-setup       - Install development tools"
