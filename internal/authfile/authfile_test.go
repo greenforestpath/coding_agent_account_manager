@@ -761,6 +761,94 @@ func TestVaultActiveProfile(t *testing.T) {
 		}
 	})
 
+	t.Run("ignores optional file differences when required files present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vaultDir := filepath.Join(tmpDir, "vault")
+		authDir := filepath.Join(tmpDir, "auth")
+
+		if err := os.MkdirAll(authDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		requiredPath := filepath.Join(authDir, "auth.json")
+		optionalPath := filepath.Join(authDir, "settings.json")
+		requiredContent := []byte(`{"token": "required-match"}`)
+		if err := os.WriteFile(requiredPath, requiredContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(optionalPath, []byte(`{"session": "current-volatile"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		profileDir := filepath.Join(vaultDir, "testtool", "stable")
+		if err := os.MkdirAll(profileDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(profileDir, "auth.json"), requiredContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(profileDir, "settings.json"), []byte(`{"session": "backup-volatile"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		v := NewVault(vaultDir)
+		fileSet := AuthFileSet{
+			Tool: "testtool",
+			Files: []AuthFileSpec{
+				{Tool: "testtool", Path: requiredPath, Required: true},
+				{Tool: "testtool", Path: optionalPath, Required: false},
+			},
+		}
+
+		profile, err := v.ActiveProfile(fileSet)
+		if err != nil {
+			t.Fatalf("ActiveProfile() error = %v", err)
+		}
+		if profile != "stable" {
+			t.Errorf("ActiveProfile() = %q, want %q", profile, "stable")
+		}
+	})
+
+	t.Run("matches optional-only profiles when allowed", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vaultDir := filepath.Join(tmpDir, "vault")
+		authDir := filepath.Join(tmpDir, "auth")
+
+		if err := os.MkdirAll(authDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		optionalPath := filepath.Join(authDir, "optional.json")
+		optionalContent := []byte(`{"token": "optional-only"}`)
+		if err := os.WriteFile(optionalPath, optionalContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		profileDir := filepath.Join(vaultDir, "testtool", "optional")
+		if err := os.MkdirAll(profileDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(profileDir, "optional.json"), optionalContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		v := NewVault(vaultDir)
+		fileSet := AuthFileSet{
+			Tool: "testtool",
+			Files: []AuthFileSpec{
+				{Tool: "testtool", Path: filepath.Join(authDir, "required.json"), Required: true},
+				{Tool: "testtool", Path: optionalPath, Required: false},
+			},
+			AllowOptionalOnly: true,
+		}
+
+		profile, err := v.ActiveProfile(fileSet)
+		if err != nil {
+			t.Fatalf("ActiveProfile() error = %v", err)
+		}
+		if profile != "optional" {
+			t.Errorf("ActiveProfile() = %q, want %q", profile, "optional")
+		}
+	})
+
 	t.Run("returns empty for no matching profile", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		vaultDir := filepath.Join(tmpDir, "vault")

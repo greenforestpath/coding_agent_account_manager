@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -198,15 +199,47 @@ func New() Model {
 	return NewWithProviders(DefaultProviders())
 }
 
+// NewWithConfig creates a new TUI model using the provided SPM config.
+// This applies all TUI preferences from the config file (theme, contrast, etc.)
+// with environment variable overrides already applied.
+func NewWithConfig(cfg *config.SPMConfig) Model {
+	return NewWithProvidersAndConfig(DefaultProviders(), cfg)
+}
+
 // NewWithProviders creates a new TUI model with the specified providers.
 func NewWithProviders(providers []string) Model {
+	return NewWithProvidersAndConfig(providers, nil)
+}
+
+// NewWithProvidersAndConfig creates a new TUI model with specified providers and SPM config.
+// If cfg is nil, defaults are used. Otherwise, TUI preferences are loaded from cfg.
+func NewWithProvidersAndConfig(providers []string, cfg *config.SPMConfig) Model {
 	cwd, _ := os.Getwd()
-	theme := DefaultTheme()
+
+	// Load TUI preferences from config (with env overrides) or use defaults
+	var prefs TUIPreferences
+	if cfg != nil {
+		prefs = TUIPreferencesFromConfig(cfg)
+	} else {
+		prefs = LoadTUIPreferences()
+	}
+
+	// Create theme from preferences
+	theme := NewTheme(prefs.ThemeOptions)
+
 	profilesPanel := NewProfilesPanelWithTheme(theme)
 	if len(providers) > 0 {
 		profilesPanel.SetProvider(providers[0])
 	}
-	defaultRuntime := config.DefaultSPMConfig().Runtime
+
+	// Use runtime config from SPM config if provided
+	var runtime config.RuntimeConfig
+	if cfg != nil {
+		runtime = cfg.Runtime
+	} else {
+		runtime = config.DefaultSPMConfig().Runtime
+	}
+
 	return Model{
 		providers:      providers,
 		activeProvider: 0,
@@ -222,7 +255,7 @@ func NewWithProviders(providers []string) Model {
 		syncPanel:      NewSyncPanelWithTheme(theme),
 		vaultPath:      authfile.DefaultVaultPath(),
 		badges:         make(map[string]profileBadge),
-		runtime:        defaultRuntime,
+		runtime:        runtime,
 		cwd:            cwd,
 		profileStore:   profile.NewStore(profile.DefaultStorePath()),
 		profileMeta:    make(map[string]map[string]*profile.Profile),
@@ -2866,8 +2899,21 @@ func Run() error {
 		runStartupCleanup(spmCfg)
 	}
 
-	m := New()
-	m.runtime = spmCfg.Runtime
+	// Log resolved TUI config for debugging (no sensitive data to redact)
+	prefs := TUIPreferencesFromConfig(spmCfg)
+	slog.Debug("resolved TUI config",
+		slog.String("theme", string(prefs.Mode)),
+		slog.String("contrast", string(prefs.Contrast)),
+		slog.Bool("no_color", prefs.NoColor),
+		slog.Bool("reduced_motion", prefs.ReducedMotion),
+		slog.Bool("toasts", prefs.Toasts),
+		slog.Bool("mouse", prefs.Mouse),
+		slog.Bool("show_key_hints", prefs.ShowKeyHints),
+		slog.String("density", prefs.Density),
+		slog.Bool("no_tui", prefs.NoTUI),
+	)
+
+	m := NewWithConfig(spmCfg)
 
 	pidPath := signals.DefaultPIDFilePath()
 	pidWritten := false
