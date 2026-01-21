@@ -5,7 +5,7 @@ project_name: caam
 before:
   hooks:
     - go mod tidy
-    - sh -c 'mkdir -p dist && go_version=$(go env GOVERSION) && printf "{\"version\":\"%s\",\"commit\":\"%s\",\"date\":\"%s\",\"go_version\":\"%s\"}\n" "{{ .Version }}" "{{ .FullCommit }}" "{{ .Date }}" "$go_version" > dist/release-manifest.json'
+    - sh -c 'go_version=$(go env GOVERSION) && printf "{\"version\":\"%s\",\"commit\":\"%s\",\"date\":\"%s\",\"go_version\":\"%s\"}\n" "{{ .Version }}" "{{ .FullCommit }}" "{{ .Date }}" "$go_version" > release-manifest.json'
 
 builds:
   - id: caam
@@ -72,7 +72,7 @@ release:
   draft: false
   prerelease: auto
   extra_files:
-    - glob: dist/release-manifest.json
+    - glob: release-manifest.json
 
 # Homebrew tap publishing
 brews:
