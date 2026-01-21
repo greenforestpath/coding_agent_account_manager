@@ -17,49 +17,43 @@ func TestRefreshProfile_Claude_Extended(t *testing.T) {
 	defer h.Close()
 
 	// 1. Setup
-	h.StartStep("Setup", "Mock Claude refresh and vault")
+	h.StartStep("Setup", "Create vault for Claude profile")
 	rootDir := h.TempDir
 	vaultDir := filepath.Join(rootDir, "vault")
 	vault := authfile.NewVault(vaultDir)
-	
+
 	// Create Claude profile
 	profileDir := filepath.Join(vaultDir, "claude", "test")
 	require.NoError(t, os.MkdirAll(profileDir, 0755))
-	
+
 	// Write auth file
 	authPath := filepath.Join(profileDir, ".claude.json")
-	// Use format that is parsed by getRefreshTokenFromJSON
 	initialContent := `{"refreshToken": "old-refresh-token", "accessToken": "old-access", "expiresAt": "2020-01-01T00:00:00Z"}`
 	require.NoError(t, os.WriteFile(authPath, []byte(initialContent), 0600))
-	
-	// Mock RefreshClaudeToken
-	originalRefresh := RefreshClaudeToken
-	defer func() { RefreshClaudeToken = originalRefresh }()
-	
-	RefreshClaudeToken = func(ctx context.Context, refreshToken string) (*TokenResponse, error) {
-		assert.Equal(t, "old-refresh-token", refreshToken)
-		return &TokenResponse{
-			AccessToken:  "new-access-token",
-			RefreshToken: "new-refresh-token",
-			ExpiresIn:    3600,
-		}, nil
-	}
-	
 	h.EndStep("Setup")
-	
-	// 2. Refresh
-	h.StartStep("Refresh", "Call RefreshProfile")
+
+	// 2. Refresh - should return UnsupportedError
+	h.StartStep("Refresh", "Call RefreshProfile (expect UnsupportedError)")
 	err := RefreshProfile(context.Background(), "claude", "test", vault, nil)
-	require.NoError(t, err)
+
+	// Claude refresh is disabled (see docs/CLAUDE_AUTH_INVENTORY.md CLAUDE-006)
+	// The refresh API endpoint is speculative/undocumented, so we return UnsupportedError
+	require.Error(t, err, "Claude refresh should return error")
+
+	var unsupportedErr *UnsupportedError
+	require.ErrorAs(t, err, &unsupportedErr, "error should be UnsupportedError")
+	assert.Equal(t, "claude", unsupportedErr.Provider)
+	assert.Contains(t, unsupportedErr.Reason, "token refresh disabled")
 	h.EndStep("Refresh")
-	
-	// 3. Verify
-	h.StartStep("Verify", "Check updated auth file")
+
+	// 3. Verify auth file unchanged
+	h.StartStep("Verify", "Auth file should be unchanged")
 	content, err := os.ReadFile(authPath)
 	require.NoError(t, err)
-	
-	assert.Contains(t, string(content), "new-access-token")
-	assert.Contains(t, string(content), "new-refresh-token")
+
+	// File should contain original values (not modified)
+	assert.Contains(t, string(content), "old-refresh-token")
+	assert.Contains(t, string(content), "old-access")
 	h.EndStep("Verify")
 }
 

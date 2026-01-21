@@ -3,6 +3,7 @@ package refresh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,45 @@ import (
 	"testing"
 	"time"
 )
+
+// =============================================================================
+// Claude Refresh Disabled Tests (CLAUDE-006)
+// =============================================================================
+
+func TestClaudeRefreshDisabled(t *testing.T) {
+	// Verify the flag is set to true indicating Claude refresh is disabled
+	if !ClaudeRefreshDisabled {
+		t.Error("ClaudeRefreshDisabled should be true; Claude refresh is disabled due to undocumented API")
+	}
+}
+
+func TestRefreshClaude_ReturnsUnsupportedError(t *testing.T) {
+	// refreshClaude should return UnsupportedError regardless of input
+	// because Claude token refresh is disabled (see CLAUDE-006 in CLAUDE_AUTH_INVENTORY.md)
+	err := refreshClaude(context.Background(), "/some/vault/path")
+
+	if err == nil {
+		t.Fatal("refreshClaude should return an error")
+	}
+
+	var unsupportedErr *UnsupportedError
+	if !errors.As(err, &unsupportedErr) {
+		t.Fatalf("expected UnsupportedError, got %T: %v", err, err)
+	}
+
+	if unsupportedErr.Provider != "claude" {
+		t.Errorf("expected provider 'claude', got %q", unsupportedErr.Provider)
+	}
+
+	if !strings.Contains(unsupportedErr.Reason, "token refresh disabled") {
+		t.Errorf("expected reason to mention 'token refresh disabled', got %q", unsupportedErr.Reason)
+	}
+
+	// Verify it wraps ErrUnsupported
+	if !errors.Is(err, ErrUnsupported) {
+		t.Error("error should wrap ErrUnsupported")
+	}
+}
 
 func TestRefreshClaudeToken(t *testing.T) {
 	// Mock server

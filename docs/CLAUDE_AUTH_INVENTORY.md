@@ -92,6 +92,7 @@
 **File:** `internal/health/expiry.go:37-192`
 **Functions:** `ParseClaudeExpiry`, `parseClaudeCredentialsFile`
 **Classification:** Correct
+**Status:** ✅ VERIFIED (2026-01-21, caam-g8mv)
 
 **Assumptions:**
 - `claudeAiOauth.expiresAt` is Unix milliseconds
@@ -101,6 +102,12 @@
 
 **Action:** No changes needed.
 
+**Verification:**
+- Reviewed `parseClaudeCredentialsFile()` implementation
+- Correctly parses `expiresAt` as Unix milliseconds via `time.UnixMilli()`
+- Correctly detects `refreshToken` presence
+- Comprehensive test coverage in `expiry_test.go`
+
 ---
 
 ### CLAUDE-006: Token Refresh API
@@ -108,6 +115,7 @@
 **File:** `internal/refresh/claude.go:32-157`
 **Functions:** `RefreshClaudeToken`, `UpdateClaudeAuth`
 **Classification:** Remove/Disable
+**Status:** ✅ DISABLED (2026-01-21, caam-g8mv)
 
 **Assumptions:**
 - OAuth refresh endpoint exists at `api.anthropic.com/oauth/token`
@@ -120,6 +128,12 @@
 - Refresh likely handled internally by Claude Code
 
 **Action:** Disable automatic token refresh; add warning that refresh is unsupported; rely on `/login` for re-authentication.
+
+**Resolution:**
+- `refreshClaude()` in `internal/refresh/refresh.go` now returns `UnsupportedError` immediately
+- Added `ClaudeRefreshDisabled = true` sentinel in `internal/refresh/claude.go`
+- Updated documentation to clarify Claude Code handles refresh internally
+- Users should use `/login` command to re-authenticate when tokens expire
 
 ---
 

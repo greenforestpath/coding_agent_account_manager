@@ -11,11 +11,24 @@ import (
 	"time"
 )
 
-// Claude Constants (Subject to verification/change)
-// TODO: Reverse engineer or find official docs for these values.
+// Claude Constants
+//
+// IMPORTANT: These are SPECULATIVE values. The OAuth refresh endpoint is
+// undocumented and may not exist or work as expected. Claude Code handles
+// token refresh internally; attempting external refresh may cause auth
+// corruption or undefined behavior.
+//
+// Claude token refresh is DISABLED in RefreshProfile(). Users should
+// re-authenticate via the /login command when tokens expire.
+//
+// See: docs/CLAUDE_AUTH_INVENTORY.md (CLAUDE-006)
 var (
-	ClaudeTokenURL = "https://api.anthropic.com/oauth/token" // Placeholder
-	ClaudeClientID = "claude-code-cli"                       // Placeholder
+	ClaudeTokenURL = "https://api.anthropic.com/oauth/token" // SPECULATIVE - do not use
+	ClaudeClientID = "claude-code-cli"                       // SPECULATIVE - do not use
+
+	// ClaudeRefreshDisabled indicates that Claude token refresh is disabled.
+	// Callers can check this before attempting refresh operations.
+	ClaudeRefreshDisabled = true
 )
 
 // TokenResponse represents the OAuth token response.

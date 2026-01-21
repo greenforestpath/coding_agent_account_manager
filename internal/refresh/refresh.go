@@ -91,30 +91,19 @@ func RefreshProfile(ctx context.Context, provider, profile string, vault *authfi
 }
 
 func refreshClaude(ctx context.Context, vaultPath string) error {
-	info, err := health.ParseClaudeExpiry(vaultPath)
-	if err != nil {
-		return fmt.Errorf("parse auth: %w", err)
+	// DISABLED: Claude token refresh is not supported.
+	//
+	// The OAuth refresh endpoint (api.anthropic.com/oauth/token) is undocumented
+	// and speculative. Claude Code handles token refresh internally, and attempting
+	// to refresh tokens externally may cause auth corruption or undefined behavior.
+	//
+	// Users should re-authenticate via the /login command when tokens expire.
+	//
+	// See: docs/CLAUDE_AUTH_INVENTORY.md (CLAUDE-006)
+	return &UnsupportedError{
+		Provider: "claude",
+		Reason:   "token refresh disabled; Claude Code handles refresh internally. Use /login to re-authenticate.",
 	}
-
-	if info.Source == "" {
-		return fmt.Errorf("auth file source unknown")
-	}
-
-	refreshToken, err := getRefreshTokenFromJSON(info.Source)
-	if err != nil {
-		return fmt.Errorf("read refresh token: %w", err)
-	}
-
-	resp, err := RefreshClaudeToken(ctx, refreshToken)
-	if err != nil {
-		return fmt.Errorf("refresh api: %w", err)
-	}
-
-	if err := UpdateClaudeAuth(info.Source, resp); err != nil {
-		return fmt.Errorf("update auth: %w", err)
-	}
-
-	return nil
 }
 
 func refreshCodex(ctx context.Context, vaultPath string) error {
