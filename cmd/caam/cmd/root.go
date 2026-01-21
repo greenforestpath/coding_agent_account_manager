@@ -104,7 +104,7 @@ Run 'caam' without arguments to launch the interactive TUI.`,
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := config.MigrateDataToCAAMHome(); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: data migration skipped: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: data migration skipped: %v\n", err)
 		}
 
 		// Initialize vault
@@ -1662,10 +1662,10 @@ Examples:
 		passMgr, err := passthrough.NewManager()
 		if err != nil {
 			// Non-fatal: profile is cloned, just warn about passthrough
-			fmt.Fprintf(os.Stderr, "warning: could not setup passthroughs: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Warning: could not setup passthroughs: %v\n", err)
 		} else {
 			if err := passMgr.SetupPassthroughs(cloned.HomePath()); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: passthrough setup failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Warning: passthrough setup failed: %v\n", err)
 			}
 		}
 

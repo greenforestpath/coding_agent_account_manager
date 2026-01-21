@@ -531,6 +531,6 @@ func (w *Wrapper) recordSession(result *Result) {
 
 	// Best effort - log error if recording fails
 	if err := w.db.RecordWrapSession(session); err != nil {
-		fmt.Fprintf(w.config.Stderr, "warning: failed to record session stats: %v\n", err)
+		fmt.Fprintf(w.config.Stderr, "Warning: failed to record session stats: %v\n", err)
 	}
 }

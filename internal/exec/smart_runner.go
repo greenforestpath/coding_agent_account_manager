@@ -252,7 +252,7 @@ func (r *SmartRunner) Run(ctx context.Context, opts RunOptions) (err error) {
 		}
 	}
 	if saveErr := opts.Profile.Save(); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to save profile metadata: %v\n", saveErr)
+		fmt.Fprintf(os.Stderr, "Warning: failed to save profile metadata: %v\n", saveErr)
 	}
 
 	if waitErr != nil {

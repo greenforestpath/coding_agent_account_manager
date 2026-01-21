@@ -123,7 +123,7 @@ func runWrap(cmd *cobra.Command, args []string) error {
 	db, err := getDB()
 	if err != nil {
 		// Non-fatal: cooldowns won't be recorded but execution can continue
-		fmt.Fprintf(os.Stderr, "warning: database unavailable, cooldowns will not be recorded\n")
+		fmt.Fprintf(os.Stderr, "Warning: database unavailable, cooldowns will not be recorded\n")
 		db = nil
 	}
 

@@ -145,7 +145,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 			once.Do(func() {
 				invoke := func() {
 					if err := opts.OnRateLimit(ctx); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: rate limit callback failed: %v\n", err)
+						fmt.Fprintf(os.Stderr, "Warning: rate limit callback failed: %v\n", err)
 					}
 				}
 				if opts.RateLimitDelay <= 0 {
@@ -244,7 +244,7 @@ func (r *Runner) Run(ctx context.Context, opts RunOptions) error {
 		if runErr == nil {
 			return fmt.Errorf("save profile metadata: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "warning: failed to save profile metadata: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Warning: failed to save profile metadata: %v\n", err)
 	}
 
 	if runErr != nil {
