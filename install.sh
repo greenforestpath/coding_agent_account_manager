@@ -1,11 +1,237 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_OWNER="Dicklesworthstone"
-REPO_NAME="coding_agent_account_manager"
-BIN_NAME="caam"
+# ==============================================================================
+# caam installer - Coding Agent Account Manager
+# ==============================================================================
+# Usage: curl -fsSL "https://raw.githubusercontent.com/.../install.sh" | bash
+#
+# Options (via env vars or arguments):
+#   --version=VERSION   Install specific version (e.g., v1.2.3)
+#   --channel=CHANNEL   Release channel: stable (default) or beta
+#   --verify            Run self-test after install (caam --version)
+#   --force             Force reinstall even if same version exists
+#   --dry-run           Show what would be done without installing
+#   --help              Show this help message
+#
+# Environment variables:
+#   INSTALL_DIR         Override install directory (default: auto-detect)
+#   CAAM_SKIP_VERIFY    Skip signature/checksum verification (not recommended)
+#   CAAM_NO_CACHE_BUST  Disable cache-busting query params
+#   NO_COLOR            Disable colored output
+#   CI                  Enable non-interactive mode (implies NO_COLOR)
+# ==============================================================================
+
+readonly SCRIPT_VERSION="2.0.0"
+readonly REPO_OWNER="Dicklesworthstone"
+readonly REPO_NAME="coding_agent_account_manager"
+readonly BIN_NAME="caam"
+
+# Exit codes for CI/automation
+readonly EXIT_SUCCESS=0
+readonly EXIT_UP_TO_DATE=0
+readonly EXIT_UPDATED=0
+readonly EXIT_ERROR=1
+readonly EXIT_DEPS_MISSING=2
+readonly EXIT_VERIFY_FAILED=3
+readonly EXIT_DOWNLOAD_FAILED=4
+readonly EXIT_BUILD_FAILED=5
+
+# Configuration (can be overridden by args)
+INSTALL_VERSION=""
+INSTALL_CHANNEL="stable"
+VERIFY_AFTER_INSTALL=false
+FORCE_INSTALL=false
+DRY_RUN=false
+SHOW_HELP=false
 
 TMP_DIRS=()
+
+# ==============================================================================
+# Argument Parsing
+# ==============================================================================
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --version=*)
+                INSTALL_VERSION="${1#*=}"
+                ;;
+            --channel=*)
+                INSTALL_CHANNEL="${1#*=}"
+                if [[ "$INSTALL_CHANNEL" != "stable" && "$INSTALL_CHANNEL" != "beta" ]]; then
+                    die "Invalid channel: $INSTALL_CHANNEL (must be 'stable' or 'beta')"
+                fi
+                ;;
+            --verify)
+                VERIFY_AFTER_INSTALL=true
+                ;;
+            --force)
+                FORCE_INSTALL=true
+                ;;
+            --dry-run)
+                DRY_RUN=true
+                ;;
+            --help|-h)
+                SHOW_HELP=true
+                ;;
+            *)
+                warn "Unknown option: $1"
+                ;;
+        esac
+        shift
+    done
+}
+
+show_help() {
+    cat <<'EOF'
+caam installer - Coding Agent Account Manager
+
+Usage:
+  curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_account_manager/main/install.sh" | bash
+  ./install.sh [OPTIONS]
+
+Options:
+  --version=VERSION   Install specific version (e.g., v1.2.3)
+  --channel=CHANNEL   Release channel: stable (default) or beta
+  --verify            Run self-test after install
+  --force             Force reinstall even if same version exists
+  --dry-run           Show what would be done without installing
+  --help              Show this help message
+
+Environment Variables:
+  INSTALL_DIR         Override install directory
+  CAAM_SKIP_VERIFY    Skip signature/checksum verification
+  CAAM_NO_CACHE_BUST  Disable cache-busting query params
+  NO_COLOR            Disable colored output
+  CI                  Enable non-interactive mode
+
+Exit Codes:
+  0  Success (installed or already up-to-date)
+  1  General error
+  2  Missing dependencies
+  3  Verification failed
+  4  Download failed
+  5  Build failed
+
+Examples:
+  # Install latest stable
+  curl -fsSL "URL" | bash
+
+  # Install specific version
+  curl -fsSL "URL" | bash -s -- --version=v1.2.3
+
+  # Install beta with verification
+  curl -fsSL "URL" | bash -s -- --channel=beta --verify
+EOF
+}
+
+# ==============================================================================
+# Output Formatting (gum-enhanced with fallback)
+# ==============================================================================
+HAS_GUM=false
+IS_TTY=false
+USE_COLOR=true
+
+detect_terminal_features() {
+    # Detect TTY
+    if [ -t 0 ] && [ -t 1 ]; then
+        IS_TTY=true
+    fi
+
+    # Detect color support
+    if [ -n "${NO_COLOR:-}" ] || [ -n "${CI:-}" ]; then
+        USE_COLOR=false
+    fi
+
+    # Detect gum
+    if command -v gum >/dev/null 2>&1 && [ "$IS_TTY" = true ] && [ "$USE_COLOR" = true ]; then
+        HAS_GUM=true
+    fi
+}
+
+# Colored/styled output with gum fallback
+info() {
+    local msg="$1"
+    if [ "$HAS_GUM" = true ]; then
+        gum style --foreground 39 "==> $msg"
+    elif [ "$USE_COLOR" = true ]; then
+        printf "\033[1;34m==>\033[0m %s\n" "$msg"
+    else
+        printf "==> %s\n" "$msg"
+    fi
+}
+
+success() {
+    local msg="$1"
+    if [ "$HAS_GUM" = true ]; then
+        gum style --foreground 82 "==> $msg"
+    elif [ "$USE_COLOR" = true ]; then
+        printf "\033[1;32m==>\033[0m %s\n" "$msg"
+    else
+        printf "==> %s\n" "$msg"
+    fi
+}
+
+warn() {
+    local msg="$1"
+    if [ "$HAS_GUM" = true ]; then
+        gum style --foreground 214 "==> WARNING: $msg"
+    elif [ "$USE_COLOR" = true ]; then
+        printf "\033[1;33m==>\033[0m WARNING: %s\n" "$msg" >&2
+    else
+        printf "==> WARNING: %s\n" "$msg" >&2
+    fi
+}
+
+error() {
+    local msg="$1"
+    if [ "$HAS_GUM" = true ]; then
+        gum style --foreground 196 "==> ERROR: $msg"
+    elif [ "$USE_COLOR" = true ]; then
+        printf "\033[1;31m==>\033[0m ERROR: %s\n" "$msg" >&2
+    else
+        printf "==> ERROR: %s\n" "$msg" >&2
+    fi
+}
+
+die() {
+    error "$1"
+    exit "${2:-$EXIT_ERROR}"
+}
+
+# Spinner for long operations
+spin() {
+    local msg="$1"
+    shift
+    if [ "$HAS_GUM" = true ] && [ "$IS_TTY" = true ]; then
+        gum spin --spinner dot --title "$msg" -- "$@"
+    else
+        info "$msg"
+        "$@"
+    fi
+}
+
+# Confirmation prompt
+confirm() {
+    local prompt="$1"
+    local default="${2:-Y}"
+
+    if [ "$IS_TTY" = false ] || [ -n "${CI:-}" ]; then
+        # Non-interactive: use default
+        [ "$default" = "Y" ] || [ "$default" = "y" ]
+        return $?
+    fi
+
+    if [ "$HAS_GUM" = true ]; then
+        gum confirm "$prompt"
+        return $?
+    fi
+
+    local reply
+    printf "%s [Y/n] " "$prompt"
+    read -r reply
+    [[ "$reply" =~ ^[Yy]?$ ]]
+}
 
 cleanup_tmp_dirs() {
     local dir
@@ -51,10 +277,125 @@ default_install_dir() {
 
 INSTALL_DIR="$(default_install_dir)"
 
-print_info() { printf "\033[1;34m==>\033[0m %s\n" "$1"; }
-print_success() { printf "\033[1;32m==>\033[0m %s\n" "$1"; }
-print_error() { printf "\033[1;31m==>\033[0m %s\n" "$1"; }
-print_warn() { printf "\033[1;33m==>\033[0m %s\n" "$1"; }
+# Backwards-compatible aliases for existing code
+print_info() { info "$1"; }
+print_success() { success "$1"; }
+print_error() { error "$1"; }
+print_warn() { warn "$1"; }
+
+# ==============================================================================
+# Cache-busting URL helper
+# ==============================================================================
+cache_bust_url() {
+    local url="$1"
+    if [ -n "${CAAM_NO_CACHE_BUST:-}" ]; then
+        echo "$url"
+        return
+    fi
+    local ts
+    ts=$(date +%s 2>/dev/null || echo "0")
+    if [[ "$url" == *"?"* ]]; then
+        echo "${url}&_cb=${ts}"
+    else
+        echo "${url}?_cb=${ts}"
+    fi
+}
+
+# ==============================================================================
+# Version comparison and idempotency
+# ==============================================================================
+get_installed_version() {
+    local bin_path="$INSTALL_DIR/$BIN_NAME"
+    if [ -x "$bin_path" ]; then
+        # Try 'version' subcommand first (caam style), then --version flag
+        local version_output
+        version_output=$("$bin_path" version 2>/dev/null || "$bin_path" --version 2>/dev/null || echo "")
+        # Extract version from output like "caam v1.2.3 (...)" or "caam 1.2.3"
+        echo "$version_output" | head -1 | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' | head -1 || echo ""
+    else
+        echo ""
+    fi
+}
+
+normalize_version() {
+    local v="$1"
+    # Strip leading 'v' if present
+    echo "${v#v}"
+}
+
+versions_equal() {
+    local v1 v2
+    v1=$(normalize_version "$1")
+    v2=$(normalize_version "$2")
+    [ "$v1" = "$v2" ]
+}
+
+# ==============================================================================
+# Backup and rollback
+# ==============================================================================
+BACKUP_PATH=""
+
+backup_existing_binary() {
+    local bin_path="$INSTALL_DIR/$BIN_NAME"
+    if [ -f "$bin_path" ]; then
+        BACKUP_PATH="${bin_path}.backup.$(date +%Y%m%d%H%M%S)"
+        info "Backing up existing binary to $BACKUP_PATH"
+        if [ -w "$(dirname "$bin_path")" ]; then
+            cp "$bin_path" "$BACKUP_PATH"
+        else
+            sudo cp "$bin_path" "$BACKUP_PATH"
+        fi
+    fi
+}
+
+rollback_on_failure() {
+    if [ -n "$BACKUP_PATH" ] && [ -f "$BACKUP_PATH" ]; then
+        warn "Installation failed, rolling back to previous version..."
+        local bin_path="$INSTALL_DIR/$BIN_NAME"
+        if [ -w "$(dirname "$bin_path")" ]; then
+            mv "$BACKUP_PATH" "$bin_path"
+        else
+            sudo mv "$BACKUP_PATH" "$bin_path"
+        fi
+        success "Rolled back to previous version"
+    fi
+}
+
+cleanup_backup() {
+    if [ -n "$BACKUP_PATH" ] && [ -f "$BACKUP_PATH" ]; then
+        if [ -w "$(dirname "$BACKUP_PATH")" ]; then
+            rm -f "$BACKUP_PATH"
+        else
+            sudo rm -f "$BACKUP_PATH"
+        fi
+    fi
+}
+
+# ==============================================================================
+# Self-verification
+# ==============================================================================
+verify_installation() {
+    local bin_path="$INSTALL_DIR/$BIN_NAME"
+    info "Verifying installation..."
+
+    if [ ! -x "$bin_path" ]; then
+        error "Binary not found or not executable: $bin_path"
+        return 1
+    fi
+
+    local version_output
+    # Try 'version' subcommand first (caam style), then --version flag
+    if version_output=$("$bin_path" version 2>&1); then
+        success "Verification passed: $version_output"
+        return 0
+    elif version_output=$("$bin_path" --version 2>&1); then
+        success "Verification passed: $version_output"
+        return 0
+    else
+        error "Failed to run '$BIN_NAME version'"
+        return 1
+    fi
+}
 
 detect_platform() {
     local os arch
@@ -78,28 +419,70 @@ detect_platform() {
     echo "${os}_${arch}"
 }
 
-get_latest_release() {
-    local url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
+get_release() {
+    local version="${1:-}"
+    local url
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" 2>/dev/null || return 1
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO- "$url" 2>/dev/null || return 1
+    if [ -n "$version" ]; then
+        # Specific version
+        url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/tags/${version}"
+    elif [ "$INSTALL_CHANNEL" = "beta" ]; then
+        # Beta: get all releases and find latest (including pre-releases)
+        url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases"
     else
-        return 1
+        # Stable: latest release only
+        url="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest"
     fi
+
+    url=$(cache_bust_url "$url")
+
+    local response
+    if command -v curl >/dev/null 2>&1; then
+        response=$(curl -fsSL "$url" 2>/dev/null) || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        response=$(wget -qO- "$url" 2>/dev/null) || return 1
+    else
+        die "Neither curl nor wget found. Please install one of them." $EXIT_DEPS_MISSING
+    fi
+
+    # For beta channel, extract first release from array
+    if [ "$INSTALL_CHANNEL" = "beta" ] && [ -z "$version" ]; then
+        echo "$response" | ensure_python && "$PYTHON_CMD" -c "
+import json, sys
+data = json.load(sys.stdin)
+if isinstance(data, list) and len(data) > 0:
+    print(json.dumps(data[0]))
+else:
+    sys.exit(1)
+"
+    else
+        echo "$response"
+    fi
+}
+
+# Backward compatibility alias
+get_latest_release() {
+    get_release ""
 }
 
 download_file() {
     local url="$1"
     local dest="$2"
+    local use_cache_bust="${3:-true}"
+
+    if [ "$use_cache_bust" = "true" ]; then
+        url=$(cache_bust_url "$url")
+    fi
 
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$url" -o "$dest" || return 1
     elif command -v wget >/dev/null 2>&1; then
         wget -q "$url" -O "$dest" || return 1
     else
-        return 1
+        die "Neither curl nor wget found. Please install one of them:
+  - macOS: brew install curl
+  - Ubuntu/Debian: sudo apt install curl
+  - Fedora: sudo dnf install curl" $EXIT_DEPS_MISSING
     fi
 }
 
@@ -378,8 +761,15 @@ verify_release_assets() {
     fi
 
     if ! command -v cosign >/dev/null 2>&1; then
-        print_error "cosign is required to verify release signatures."
-        print_error "Install cosign or set CAAM_SKIP_VERIFY=1 to bypass verification."
+        error "cosign is required to verify release signatures."
+        error ""
+        error "Install cosign:"
+        error "  macOS:        brew install cosign"
+        error "  Ubuntu/Debian: sudo apt install cosign"
+        error "  Go:           go install github.com/sigstore/cosign/v2/cmd/cosign@latest"
+        error ""
+        error "Or bypass verification (not recommended for security):"
+        error "  CAAM_SKIP_VERIFY=1 curl -fsSL ... | bash"
         return 1
     fi
 
@@ -423,7 +813,7 @@ verify_release_assets() {
 }
 
 is_tty() {
-    [ -t 0 ] && [ -t 1 ]
+    [ "$IS_TTY" = true ]
 }
 
 ensure_go() {
@@ -501,10 +891,23 @@ try_binary_install() {
     local platform="$1"
     local tmp_dir
 
-    print_info "Checking for pre-built binary..."
+    info "Checking for pre-built binary..."
 
     local release_json
-    release_json=$(get_latest_release) || return 1
+    if [ -n "$INSTALL_VERSION" ]; then
+        release_json=$(get_release "$INSTALL_VERSION") || {
+            error "Failed to fetch release $INSTALL_VERSION"
+            error "Check that the version exists: https://github.com/${REPO_OWNER}/${REPO_NAME}/releases"
+            return 1
+        }
+    else
+        release_json=$(get_release) || {
+            error "Failed to fetch release information from GitHub"
+            error "Check your internet connection or try again later"
+            error "You can also try: CAAM_SKIP_VERIFY=1 to skip verification"
+            return 1
+        }
+    fi
 
     local parsed version download_url asset_name
     parsed=$(printf '%s' "$release_json" | select_release_asset "$platform") || true
@@ -514,7 +917,8 @@ try_binary_install() {
     asset_name=$(printf '%s' "$parsed" | sed -n '3p')
 
     if [ -z "$download_url" ]; then
-        print_warn "No pre-built binary found for $platform"
+        warn "No pre-built binary found for $platform"
+        warn "Available platforms may differ. Falling back to source build."
         return 1
     fi
 
@@ -522,12 +926,25 @@ try_binary_install() {
         version="unknown"
     fi
 
-    print_info "Latest release: $version"
-    if [ -n "$asset_name" ]; then
-        print_info "Selected asset: $asset_name"
+    # Check for idempotency (skip if same version already installed)
+    local installed_version
+    installed_version=$(get_installed_version)
+    if [ -n "$installed_version" ] && versions_equal "$installed_version" "$version"; then
+        if [ "$FORCE_INSTALL" = true ]; then
+            info "Same version already installed ($installed_version), but --force specified"
+        else
+            success "$BIN_NAME $version is already installed and up-to-date"
+            info "Use --force to reinstall"
+            return 0
+        fi
     fi
 
-    print_info "Downloading $download_url..."
+    info "Release version: $version"
+    if [ -n "$asset_name" ]; then
+        info "Selected asset: $asset_name"
+    fi
+
+    info "Downloading from GitHub..."
 
     tmp_dir=$(make_tmp_dir)
 
@@ -538,22 +955,37 @@ try_binary_install() {
 
     local archive_path="$tmp_dir/archive${ext}"
 
-    if ! download_file "$download_url" "$archive_path"; then
-        print_warn "Download failed"
-        return 1
+    # Use spin for download if gum available
+    if [ "$HAS_GUM" = true ]; then
+        if ! spin "Downloading $asset_name" download_file "$download_url" "$archive_path" "false"; then
+            error "Download failed from: $download_url"
+            error "Try again or check https://github.com/${REPO_OWNER}/${REPO_NAME}/releases"
+            return 1
+        fi
+    else
+        if ! download_file "$download_url" "$archive_path" "false"; then
+            error "Download failed from: $download_url"
+            error "Try again or check https://github.com/${REPO_OWNER}/${REPO_NAME}/releases"
+            return 1
+        fi
     fi
 
     if ! verify_release_assets "$release_json" "$version" "$asset_name" "$archive_path" "$tmp_dir"; then
+        error "Release verification failed"
+        error "This could indicate a tampered download or network issue"
+        error "Set CAAM_SKIP_VERIFY=1 to bypass (not recommended)"
         return 1
     fi
 
-    print_info "Extracting..."
+    info "Extracting archive..."
 
     if [[ "$ext" == ".zip" ]]; then
         if command -v unzip >/dev/null 2>&1; then
             unzip -q "$archive_path" -d "$tmp_dir"
         else
-            print_warn "unzip not found"
+            error "unzip is required but not found"
+            error "Install it with: sudo apt install unzip (Debian/Ubuntu)"
+            error "               : brew install unzip (macOS)"
             return 1
         fi
     else
@@ -572,7 +1004,8 @@ try_binary_install() {
     fi
 
     if [ -z "$binary_path" ]; then
-        print_warn "Binary not found in archive"
+        error "Binary not found in archive"
+        error "The downloaded archive may be corrupted"
         return 1
     fi
 
@@ -581,120 +1014,228 @@ try_binary_install() {
     ensure_install_dir "$INSTALL_DIR"
     local dest_path="$INSTALL_DIR/$BIN_NAME"
 
+    # Backup existing binary before replacing
+    backup_existing_binary
+
     if [ -w "$INSTALL_DIR" ]; then
         mv "$binary_path" "$dest_path"
     else
-        print_info "Installing to $INSTALL_DIR requires sudo..."
+        info "Installing to $INSTALL_DIR requires sudo..."
         sudo mv "$binary_path" "$dest_path"
     fi
 
-    print_success "Installed $BIN_NAME $version to $dest_path"
+    success "Installed $BIN_NAME $version to $dest_path"
     return 0
 }
 
 try_go_install() {
-    print_info "Attempting to build from source with go build..."
+    info "Attempting to build from source with go build..."
 
     local go_version
     if ! go_version=$(ensure_go); then
-        print_error "Go 1.21 or later is required for building from source."
-        exit 1
+        error "Go 1.21 or later is required for building from source."
+        error ""
+        error "Install Go:"
+        error "  macOS:         brew install go"
+        error "  Ubuntu/Debian: sudo apt install golang-go"
+        error "  Official:      https://go.dev/dl/"
+        return 1
     fi
 
-    print_info "Using Go $go_version"
+    info "Using Go $go_version"
 
     local tmp_dir src_dir repo_url tarball_url tarball_path build_output fetched=0
     tmp_dir=$(make_tmp_dir)
     src_dir="$tmp_dir/src"
     repo_url="https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
 
-    print_info "Fetching source..."
+    info "Fetching source..."
 
     if command -v git >/dev/null 2>&1; then
         if git clone --depth 1 "$repo_url" "$src_dir" >/dev/null 2>&1; then
             fetched=1
         else
-            print_warn "git clone failed, attempting tarball download..."
+            warn "git clone failed, attempting tarball download..."
         fi
     fi
 
     if [ "$fetched" -ne 1 ]; then
-        tarball_url="https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/main"
+        tarball_url=$(cache_bust_url "https://codeload.github.com/${REPO_OWNER}/${REPO_NAME}/tar.gz/refs/heads/main")
         tarball_path="$tmp_dir/source.tar.gz"
-        if ! download_file "$tarball_url" "$tarball_path"; then
-            print_error "Failed to download source tarball from GitHub."
-            exit 1
+        if ! download_file "$tarball_url" "$tarball_path" "false"; then
+            error "Failed to download source tarball from GitHub."
+            error "Check your internet connection and try again."
+            return 1
         fi
         tar -xzf "$tarball_path" -C "$tmp_dir"
         src_dir=$(find "$tmp_dir" -maxdepth 1 -type d -name "${REPO_NAME}-*" | head -1)
         if [ -z "$src_dir" ]; then
-            print_error "Could not locate extracted source directory."
-            exit 1
+            error "Could not locate extracted source directory."
+            error "The downloaded tarball may be corrupted."
+            return 1
         fi
     fi
 
-    print_info "Building $BIN_NAME from source..."
+    info "Building $BIN_NAME from source (this may take a minute)..."
     build_output="$tmp_dir/$BIN_NAME"
-    if ! (cd "$src_dir" && GO111MODULE=on CGO_ENABLED=0 go build -o "$build_output" "./cmd/$BIN_NAME"); then
-        print_error "Go build failed."
-        exit 1
+
+    local build_cmd="cd \"$src_dir\" && GO111MODULE=on CGO_ENABLED=0 go build -o \"$build_output\" \"./cmd/$BIN_NAME\""
+
+    if [ "$HAS_GUM" = true ]; then
+        if ! spin "Compiling $BIN_NAME" bash -c "$build_cmd"; then
+            error "Go build failed."
+            error ""
+            error "Troubleshooting:"
+            error "  1. Ensure Go 1.21+ is installed: go version"
+            error "  2. Check for network issues (module downloads)"
+            error "  3. Try manually: git clone $repo_url && cd ${REPO_NAME} && go build ./cmd/$BIN_NAME"
+            return 1
+        fi
+    else
+        if ! (cd "$src_dir" && GO111MODULE=on CGO_ENABLED=0 go build -o "$build_output" "./cmd/$BIN_NAME"); then
+            error "Go build failed."
+            error ""
+            error "Troubleshooting:"
+            error "  1. Ensure Go 1.21+ is installed: go version"
+            error "  2. Check for network issues (module downloads)"
+            error "  3. Try manually: git clone $repo_url && cd ${REPO_NAME} && go build ./cmd/$BIN_NAME"
+            return 1
+        fi
     fi
 
     ensure_install_dir "$INSTALL_DIR"
     local dest_path="$INSTALL_DIR/$BIN_NAME"
 
+    # Backup existing binary before replacing
+    backup_existing_binary
+
     if [ -w "$INSTALL_DIR" ]; then
         mv "$build_output" "$dest_path"
     else
-        print_info "Installing to $INSTALL_DIR requires sudo..."
+        info "Installing to $INSTALL_DIR requires sudo..."
         sudo mv "$build_output" "$dest_path"
     fi
 
-    print_success "Built and installed $BIN_NAME from source to $dest_path"
+    success "Built and installed $BIN_NAME from source to $dest_path"
     return 0
 }
 
-main() {
-    print_info "Installing $BIN_NAME - Coding Agent Account Manager..."
-
-    local platform
-    platform=$(detect_platform) || {
-        print_warn "Could not detect platform, will try building from source"
-        try_go_install
-        exit 0
-    }
-
-    print_info "Detected platform: $platform"
-
-    # First, try to download pre-built binary
-    if try_binary_install "$platform"; then
-        print_info ""
-        print_info "Quick start:"
-        print_info "  1. Login to your AI tool normally (e.g., 'claude' then '/login')"
-        print_info "  2. Backup: caam backup claude my-account"
-        print_info "  3. Switch: caam activate claude other-account"
-        print_info ""
-        print_info "Run 'caam --help' for all commands."
-        echo ""
-        echo "Tip: You can also install via Homebrew:"
-        echo "  brew install dicklesworthstone/tap/caam"
-        exit 0
-    fi
-
-    # Fall back to building from source
-    print_info "Pre-built binary not available, falling back to source build..."
-    try_go_install
-
-    print_info ""
-    print_info "Quick start:"
-    print_info "  1. Login to your AI tool normally (e.g., 'claude' then '/login')"
-    print_info "  2. Backup: caam backup claude my-account"
-    print_info "  3. Switch: caam activate claude other-account"
-    print_info ""
-    print_info "Run 'caam --help' for all commands."
+show_quick_start() {
+    echo ""
+    info "Quick start:"
+    info "  1. Login to your AI tool normally (e.g., 'claude' then '/login')"
+    info "  2. Backup: caam backup claude my-account"
+    info "  3. Switch: caam activate claude other-account"
+    echo ""
+    info "Run 'caam --help' for all commands."
     echo ""
     echo "Tip: You can also install via Homebrew:"
     echo "  brew install dicklesworthstone/tap/caam"
+}
+
+main() {
+    # Parse arguments first
+    parse_args "$@"
+
+    # Initialize terminal feature detection
+    detect_terminal_features
+
+    # Show help if requested
+    if [ "$SHOW_HELP" = true ]; then
+        show_help
+        exit $EXIT_SUCCESS
+    fi
+
+    # Log mode info
+    if [ -n "${CI:-}" ]; then
+        info "Running in CI/non-interactive mode"
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        info "Dry-run mode: no changes will be made"
+    fi
+
+    info "Installing $BIN_NAME - Coding Agent Account Manager (installer v$SCRIPT_VERSION)..."
+
+    # Detect platform
+    local platform
+    platform=$(detect_platform) || {
+        warn "Could not detect platform, will try building from source"
+        if [ "$DRY_RUN" = true ]; then
+            info "[DRY-RUN] Would build from source"
+            exit $EXIT_SUCCESS
+        fi
+        try_go_install
+        show_quick_start
+        exit $EXIT_SUCCESS
+    }
+
+    info "Detected platform: $platform"
+    info "Install directory: $INSTALL_DIR"
+    if [ -n "$INSTALL_VERSION" ]; then
+        info "Requested version: $INSTALL_VERSION"
+    fi
+    info "Channel: $INSTALL_CHANNEL"
+
+    # Check for existing installation (idempotency)
+    local installed_version
+    installed_version=$(get_installed_version)
+    if [ -n "$installed_version" ]; then
+        info "Currently installed: $installed_version"
+    fi
+
+    # Dry-run: show what would happen and exit
+    if [ "$DRY_RUN" = true ]; then
+        info "[DRY-RUN] Would check for latest release"
+        info "[DRY-RUN] Would download and verify binary for $platform"
+        if [ -n "$installed_version" ]; then
+            info "[DRY-RUN] Would backup existing binary before replacing"
+        fi
+        info "[DRY-RUN] Would install to $INSTALL_DIR/$BIN_NAME"
+        if [ "$VERIFY_AFTER_INSTALL" = true ]; then
+            info "[DRY-RUN] Would verify installation by running '$BIN_NAME --version'"
+        fi
+        exit $EXIT_SUCCESS
+    fi
+
+    # First, try to download pre-built binary
+    if try_binary_install "$platform"; then
+        # Cleanup backup on success
+        cleanup_backup
+
+        # Run verification if requested
+        if [ "$VERIFY_AFTER_INSTALL" = true ]; then
+            if ! verify_installation; then
+                rollback_on_failure
+                die "Installation verification failed" $EXIT_VERIFY_FAILED
+            fi
+        fi
+
+        show_quick_start
+        exit $EXIT_SUCCESS
+    fi
+
+    # Fall back to building from source
+    info "Pre-built binary not available, falling back to source build..."
+
+    if ! try_go_install; then
+        rollback_on_failure
+        die "Failed to install $BIN_NAME" $EXIT_BUILD_FAILED
+    fi
+
+    # Cleanup backup on success
+    cleanup_backup
+
+    # Run verification if requested
+    if [ "$VERIFY_AFTER_INSTALL" = true ]; then
+        if ! verify_installation; then
+            rollback_on_failure
+            die "Installation verification failed" $EXIT_VERIFY_FAILED
+        fi
+    fi
+
+    show_quick_start
+    exit $EXIT_SUCCESS
 }
 
 if [[ ${BASH_SOURCE+x} != x ]]; then
