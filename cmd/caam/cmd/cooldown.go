@@ -198,12 +198,9 @@ func runCooldownList(cmd *cobra.Command, args []string) error {
 				Notes:         ev.Notes,
 			})
 		}
-		data, err := json.MarshalIndent(output, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), string(data))
-		return nil
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(output)
 	}
 
 	if len(events) == 0 {
