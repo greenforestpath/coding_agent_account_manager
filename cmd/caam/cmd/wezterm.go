@@ -54,10 +54,50 @@ The report includes pane id and scan timestamp alongside each URL.`,
 	RunE: runWeztermOAuthReport,
 }
 
+var weztermRecoverCmd = &cobra.Command{
+	Use:   "recover",
+	Short: "Interactive batch recovery for rate-limited Claude sessions",
+	Long: `Monitor WezTerm panes for rate limits and coordinate authentication recovery.
+
+This command scans all WezTerm panes, detects their current state in the
+authentication flow, and provides interactive controls for batch recovery.
+
+State Machine (per pane):
+  IDLE            - normal output, no action needed
+  RATE_LIMITED    - rate limit detected → can inject /login
+  AWAITING_SELECT - login prompt shown → can select subscription (1)
+  AWAITING_URL    - OAuth URL detected → waiting for code
+  CODE_READY      - code available → can inject code
+  RESUMING        - login success → can inject resume prompt
+  FAILED          - error occurred → can retry
+
+Interactive Controls:
+  r  - refresh pane states
+  l  - inject /login to rate-limited panes
+  s  - select subscription (1) on awaiting panes
+  c  - inject codes to code-ready panes
+  p  - inject resume prompt to resuming panes
+  a  - auto-advance all panes one step
+  q  - quit
+
+Examples:
+  # Interactive recovery session
+  caam wezterm recover
+
+  # One-shot status display
+  caam wezterm recover --status
+
+  # Auto-advance all panes without interaction
+  caam wezterm recover --auto --yes
+`,
+	RunE: runWeztermRecover,
+}
+
 func init() {
 	rootCmd.AddCommand(weztermCmd)
 	weztermCmd.AddCommand(weztermLoginAllCmd)
 	weztermCmd.AddCommand(weztermOAuthReportCmd)
+	weztermCmd.AddCommand(weztermRecoverCmd)
 
 	weztermLoginAllCmd.Flags().Bool("all", false, "broadcast to all panes (skip matching)")
 	weztermLoginAllCmd.Flags().Bool("yes", false, "skip confirmation prompt")
@@ -67,6 +107,13 @@ func init() {
 
 	weztermOAuthReportCmd.Flags().Bool("all", false, "scan all panes (skip matching)")
 	weztermOAuthReportCmd.Flags().String("match", "", "regex pattern to match panes (overrides default)")
+
+	weztermRecoverCmd.Flags().Bool("status", false, "show status and exit (no interaction)")
+	weztermRecoverCmd.Flags().Bool("auto", false, "auto-advance all panes one step")
+	weztermRecoverCmd.Flags().Bool("yes", false, "skip confirmation for auto mode")
+	weztermRecoverCmd.Flags().Bool("watch", false, "continuously watch and refresh (with --status)")
+	weztermRecoverCmd.Flags().Duration("interval", 2*time.Second, "refresh interval for watch mode")
+	weztermRecoverCmd.Flags().String("resume-prompt", "proceed. Reread AGENTS.md so it's still fresh in your mind. Use ultrathink.\n", "prompt to inject after successful auth")
 }
 
 type weztermPane struct {
@@ -554,4 +601,473 @@ func getStringField(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// RecoverState represents the state of a pane in the recovery flow.
+type RecoverState int
+
+const (
+	RecoverIdle RecoverState = iota
+	RecoverRateLimited
+	RecoverAwaitingSelect
+	RecoverAwaitingURL
+	RecoverCodeReady
+	RecoverResuming
+	RecoverFailed
+)
+
+func (s RecoverState) String() string {
+	switch s {
+	case RecoverIdle:
+		return "IDLE"
+	case RecoverRateLimited:
+		return "RATE_LIMITED"
+	case RecoverAwaitingSelect:
+		return "AWAITING_SELECT"
+	case RecoverAwaitingURL:
+		return "AWAITING_URL"
+	case RecoverCodeReady:
+		return "CODE_READY"
+	case RecoverResuming:
+		return "RESUMING"
+	case RecoverFailed:
+		return "FAILED"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// RecoverPaneState tracks the recovery state for a single pane.
+type RecoverPaneState struct {
+	Pane        weztermPane
+	State       RecoverState
+	MatchReason string
+	OAuthURL    string
+	Code        string
+	Error       string
+	LastAction  time.Time
+	Cooldown    time.Duration
+}
+
+// IsOnCooldown returns true if the pane is still on cooldown from last action.
+func (r *RecoverPaneState) IsOnCooldown() bool {
+	if r.Cooldown == 0 {
+		return false
+	}
+	return time.Since(r.LastAction) < r.Cooldown
+}
+
+// Recovery state detection patterns (using coordinator patterns).
+var recoverPatterns = struct {
+	RateLimit    *regexp.Regexp
+	SelectMethod *regexp.Regexp
+	OAuthURL     *regexp.Regexp
+	PastePrompt  *regexp.Regexp
+	LoginSuccess *regexp.Regexp
+	LoginFailed  *regexp.Regexp
+}{
+	RateLimit:    regexp.MustCompile(`(?i)you'?ve hit your limit.*resets`),
+	SelectMethod: regexp.MustCompile(`(?i)select login method:`),
+	OAuthURL:     regexp.MustCompile(`https://claude\.ai/oauth/authorize\?[^\s]+`),
+	PastePrompt:  regexp.MustCompile(`(?i)paste code here if prompted`),
+	LoginSuccess: regexp.MustCompile(`(?i)(logged in as|successfully authenticated|welcome back)`),
+	LoginFailed:  regexp.MustCompile(`(?i)(login failed|authentication error|invalid code|expired|error signing)`),
+}
+
+// detectRecoverState analyzes pane output and returns the recovery state.
+func detectRecoverState(text string) (RecoverState, string, string) {
+	normalized := normalizeWeztermText(text)
+
+	// Check for login success first (highest priority)
+	if recoverPatterns.LoginSuccess.MatchString(normalized) {
+		return RecoverResuming, "login_success", ""
+	}
+
+	// Check for login failure
+	if recoverPatterns.LoginFailed.MatchString(normalized) {
+		return RecoverFailed, "login_failed", ""
+	}
+
+	// Check for OAuth URL
+	if url := recoverPatterns.OAuthURL.FindString(normalized); url != "" {
+		return RecoverAwaitingURL, "oauth_url", url
+	}
+
+	// Check for paste prompt (URL was shown)
+	if recoverPatterns.PastePrompt.MatchString(normalized) {
+		url := recoverPatterns.OAuthURL.FindString(normalized)
+		return RecoverAwaitingURL, "paste_prompt", url
+	}
+
+	// Check for method selection prompt
+	if recoverPatterns.SelectMethod.MatchString(normalized) {
+		return RecoverAwaitingSelect, "select_method", ""
+	}
+
+	// Check for rate limit
+	if recoverPatterns.RateLimit.MatchString(normalized) {
+		return RecoverRateLimited, "rate_limit", ""
+	}
+
+	return RecoverIdle, "", ""
+}
+
+func runWeztermRecover(cmd *cobra.Command, args []string) error {
+	if _, err := weztermLookupFunc("wezterm"); err != nil {
+		return fmt.Errorf("wezterm CLI not found in PATH")
+	}
+
+	statusOnly, _ := cmd.Flags().GetBool("status")
+	autoMode, _ := cmd.Flags().GetBool("auto")
+	yes, _ := cmd.Flags().GetBool("yes")
+	watchMode, _ := cmd.Flags().GetBool("watch")
+	interval, _ := cmd.Flags().GetDuration("interval")
+	resumePrompt, _ := cmd.Flags().GetString("resume-prompt")
+
+	logger := weztermDebugLogger()
+
+	// Scan panes and detect states
+	states, err := scanRecoverStates(logger)
+	if err != nil {
+		return err
+	}
+
+	if len(states) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No WezTerm panes found.")
+		return nil
+	}
+
+	// Status-only mode
+	if statusOnly {
+		if watchMode {
+			return runWatchMode(cmd, interval, logger)
+		}
+		printRecoverTable(cmd.OutOrStdout(), states)
+		return nil
+	}
+
+	// Auto mode - advance all panes one step
+	if autoMode {
+		return runAutoRecover(cmd, states, yes, resumePrompt, logger)
+	}
+
+	// Interactive mode
+	return runInteractiveRecover(cmd, states, resumePrompt, logger)
+}
+
+func scanRecoverStates(logger *slog.Logger) ([]*RecoverPaneState, error) {
+	panes, err := weztermListPanesFunc()
+	if err != nil {
+		return nil, fmt.Errorf("list panes: %w", err)
+	}
+
+	var states []*RecoverPaneState
+	for _, pane := range panes {
+		text, err := weztermGetTextFunc(pane.ID)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("pane read failed", "pane_id", pane.ID, "error", err)
+			}
+			states = append(states, &RecoverPaneState{
+				Pane:  pane,
+				State: RecoverFailed,
+				Error: err.Error(),
+			})
+			continue
+		}
+
+		state, reason, url := detectRecoverState(text)
+
+		// Also check for tool markers to confirm it's a Claude session
+		match := matchWeztermPane("claude", text, nil)
+		if !match.Matched && state == RecoverIdle {
+			// Skip non-Claude panes in idle state
+			continue
+		}
+
+		ps := &RecoverPaneState{
+			Pane:        pane,
+			State:       state,
+			MatchReason: reason,
+			OAuthURL:    url,
+		}
+
+		if match.Matched && ps.MatchReason == "" {
+			ps.MatchReason = match.Reason
+		}
+
+		states = append(states, ps)
+	}
+
+	return states, nil
+}
+
+func printRecoverTable(w io.Writer, states []*RecoverPaneState) {
+	fmt.Fprintf(w, "\n%-6s  %-20s  %-16s  %-15s  %s\n",
+		"PANE", "TITLE", "STATE", "REASON", "URL/ERROR")
+	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 100))
+
+	for _, s := range states {
+		title := s.Pane.Title
+		if len(title) > 20 {
+			title = title[:17] + "..."
+		}
+		if title == "" {
+			title = "-"
+		}
+
+		extra := ""
+		if s.OAuthURL != "" {
+			if len(s.OAuthURL) > 40 {
+				extra = s.OAuthURL[:37] + "..."
+			} else {
+				extra = s.OAuthURL
+			}
+		} else if s.Error != "" {
+			extra = "ERR: " + s.Error
+		}
+
+		fmt.Fprintf(w, "%-6d  %-20s  %-16s  %-15s  %s\n",
+			s.Pane.ID, title, s.State.String(), s.MatchReason, extra)
+	}
+	fmt.Fprintln(w)
+}
+
+func printRecoverSummary(w io.Writer, states []*RecoverPaneState) {
+	counts := make(map[RecoverState]int)
+	for _, s := range states {
+		counts[s.State]++
+	}
+
+	fmt.Fprintf(w, "Summary: %d panes (", len(states))
+	parts := []string{}
+	if n := counts[RecoverRateLimited]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d rate-limited", n))
+	}
+	if n := counts[RecoverAwaitingSelect]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d awaiting-select", n))
+	}
+	if n := counts[RecoverAwaitingURL]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d awaiting-url", n))
+	}
+	if n := counts[RecoverResuming]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d resuming", n))
+	}
+	if n := counts[RecoverFailed]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", n))
+	}
+	if n := counts[RecoverIdle]; n > 0 {
+		parts = append(parts, fmt.Sprintf("%d idle", n))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "all idle")
+	}
+	fmt.Fprintf(w, "%s)\n", strings.Join(parts, ", "))
+}
+
+func runWatchMode(cmd *cobra.Command, interval time.Duration, logger *slog.Logger) error {
+	fmt.Fprintf(cmd.OutOrStdout(), "Watching panes (refresh every %v, Ctrl+C to stop)...\n", interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		// Clear screen and move cursor to top
+		fmt.Fprint(cmd.OutOrStdout(), "\033[2J\033[H")
+		fmt.Fprintf(cmd.OutOrStdout(), "WezTerm Recovery Status [%s]\n", time.Now().Format("15:04:05"))
+
+		states, err := scanRecoverStates(logger)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+		} else {
+			printRecoverTable(cmd.OutOrStdout(), states)
+			printRecoverSummary(cmd.OutOrStdout(), states)
+		}
+
+		fmt.Fprintln(cmd.OutOrStdout(), "\nPress Ctrl+C to stop watching.")
+
+		select {
+		case <-ticker.C:
+			continue
+		case <-cmd.Context().Done():
+			return nil
+		}
+	}
+}
+
+func runAutoRecover(cmd *cobra.Command, states []*RecoverPaneState, yes bool, resumePrompt string, logger *slog.Logger) error {
+	// Count actionable panes
+	var actionable []*RecoverPaneState
+	for _, s := range states {
+		switch s.State {
+		case RecoverRateLimited, RecoverAwaitingSelect, RecoverResuming:
+			actionable = append(actionable, s)
+		}
+	}
+
+	if len(actionable) == 0 {
+		printRecoverTable(cmd.OutOrStdout(), states)
+		fmt.Fprintln(cmd.OutOrStdout(), "No panes need action.")
+		return nil
+	}
+
+	printRecoverTable(cmd.OutOrStdout(), states)
+	fmt.Fprintf(cmd.OutOrStdout(), "Will auto-advance %d pane(s):\n", len(actionable))
+	for _, s := range actionable {
+		action := ""
+		switch s.State {
+		case RecoverRateLimited:
+			action = "inject /login"
+		case RecoverAwaitingSelect:
+			action = "select subscription (1)"
+		case RecoverResuming:
+			action = "inject resume prompt"
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  pane %d: %s -> %s\n", s.Pane.ID, s.State, action)
+	}
+
+	if !yes {
+		if !weztermIsTerminal(int(os.Stdin.Fd())) {
+			return fmt.Errorf("non-interactive: use --yes to confirm")
+		}
+		fmt.Fprint(cmd.OutOrStdout(), "\nProceed? [y/N]: ")
+		var resp string
+		fmt.Fscanln(os.Stdin, &resp)
+		if strings.ToLower(strings.TrimSpace(resp)) != "y" {
+			fmt.Fprintln(cmd.OutOrStdout(), "Cancelled.")
+			return nil
+		}
+	}
+
+	// Execute actions
+	success, fail := 0, 0
+	for _, s := range actionable {
+		var err error
+		switch s.State {
+		case RecoverRateLimited:
+			err = weztermSendTextFunc(s.Pane.ID, "/login\n")
+			if err == nil && logger != nil {
+				logger.Debug("injected /login", "pane_id", s.Pane.ID)
+			}
+		case RecoverAwaitingSelect:
+			time.Sleep(200 * time.Millisecond)
+			err = weztermSendTextFunc(s.Pane.ID, "1\n")
+			if err == nil && logger != nil {
+				logger.Debug("injected subscription select", "pane_id", s.Pane.ID)
+			}
+		case RecoverResuming:
+			time.Sleep(500 * time.Millisecond)
+			err = weztermSendTextFunc(s.Pane.ID, resumePrompt)
+			if err == nil && logger != nil {
+				logger.Debug("injected resume prompt", "pane_id", s.Pane.ID)
+			}
+		}
+		if err != nil {
+			fail++
+			fmt.Fprintf(cmd.ErrOrStderr(), "  pane %d: FAILED - %v\n", s.Pane.ID, err)
+		} else {
+			success++
+			fmt.Fprintf(cmd.OutOrStdout(), "  pane %d: OK\n", s.Pane.ID)
+		}
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "\nDone: %d succeeded, %d failed.\n", success, fail)
+	return nil
+}
+
+func runInteractiveRecover(cmd *cobra.Command, states []*RecoverPaneState, resumePrompt string, logger *slog.Logger) error {
+	if !weztermIsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("interactive mode requires a terminal (use --status or --auto)")
+	}
+
+	fmt.Fprintln(cmd.OutOrStdout(), "WezTerm Recovery - Interactive Mode")
+	fmt.Fprintln(cmd.OutOrStdout(), "Commands: (r)efresh (l)ogin (s)elect (p)rompt (a)uto (q)uit")
+	fmt.Fprintln(cmd.OutOrStdout())
+
+	printRecoverTable(cmd.OutOrStdout(), states)
+	printRecoverSummary(cmd.OutOrStdout(), states)
+
+	// Set terminal to raw mode for single-char input
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	if err != nil {
+		return fmt.Errorf("failed to set raw mode: %w", err)
+	}
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
+
+	buf := make([]byte, 1)
+	for {
+		fmt.Fprint(cmd.OutOrStdout(), "\r> ")
+		_, err := os.Stdin.Read(buf)
+		if err != nil {
+			break
+		}
+
+		// Restore terminal for output
+		term.Restore(int(os.Stdin.Fd()), oldState)
+
+		switch buf[0] {
+		case 'q', 'Q', 3: // q or Ctrl+C
+			fmt.Fprintln(cmd.OutOrStdout(), "\nExiting.")
+			return nil
+
+		case 'r', 'R':
+			fmt.Fprintln(cmd.OutOrStdout(), "\nRefreshing...")
+			states, err = scanRecoverStates(logger)
+			if err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+			} else {
+				printRecoverTable(cmd.OutOrStdout(), states)
+				printRecoverSummary(cmd.OutOrStdout(), states)
+			}
+
+		case 'l', 'L':
+			fmt.Fprintln(cmd.OutOrStdout(), "\nInjecting /login to rate-limited panes...")
+			injectToState(cmd, states, RecoverRateLimited, "/login\n", logger)
+
+		case 's', 'S':
+			fmt.Fprintln(cmd.OutOrStdout(), "\nSelecting subscription on awaiting panes...")
+			time.Sleep(200 * time.Millisecond)
+			injectToState(cmd, states, RecoverAwaitingSelect, "1\n", logger)
+
+		case 'p', 'P':
+			fmt.Fprintln(cmd.OutOrStdout(), "\nInjecting resume prompt to resuming panes...")
+			time.Sleep(500 * time.Millisecond)
+			injectToState(cmd, states, RecoverResuming, resumePrompt, logger)
+
+		case 'a', 'A':
+			fmt.Fprintln(cmd.OutOrStdout(), "\nAuto-advancing all panes...")
+			runAutoRecover(cmd, states, true, resumePrompt, logger)
+			// Refresh after auto
+			states, _ = scanRecoverStates(logger)
+			printRecoverTable(cmd.OutOrStdout(), states)
+			printRecoverSummary(cmd.OutOrStdout(), states)
+
+		default:
+			fmt.Fprintf(cmd.OutOrStdout(), "\nUnknown command: %c\n", buf[0])
+			fmt.Fprintln(cmd.OutOrStdout(), "Commands: (r)efresh (l)ogin (s)elect (p)rompt (a)uto (q)uit")
+		}
+
+		// Re-enable raw mode for next input
+		oldState, _ = term.MakeRaw(int(os.Stdin.Fd()))
+	}
+
+	return nil
+}
+
+func injectToState(cmd *cobra.Command, states []*RecoverPaneState, targetState RecoverState, text string, logger *slog.Logger) {
+	count := 0
+	for _, s := range states {
+		if s.State != targetState {
+			continue
+		}
+		if err := weztermSendTextFunc(s.Pane.ID, text); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  pane %d: FAILED - %v\n", s.Pane.ID, err)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "  pane %d: OK\n", s.Pane.ID)
+			count++
+		}
+	}
+	if count == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "  (no panes in target state)")
+	}
 }
