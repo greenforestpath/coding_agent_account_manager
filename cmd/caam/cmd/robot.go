@@ -1770,7 +1770,7 @@ func runRobotDoctor(cmd *cobra.Command, args []string) error {
 	fix, _ := cmd.Flags().GetBool("fix")
 	validateTokens, _ := cmd.Flags().GetBool("validate-tokens")
 
-	report := runDoctorChecks(fix, validateTokens)
+	report := runDoctorChecks(fix, validateTokens, false, false)
 
 	duration := time.Since(start)
 	output := RobotOutput{

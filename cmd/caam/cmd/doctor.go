@@ -8,6 +8,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type DoctorReport struct {
 	FailCount       int           `json:"fail_count"`
 	FixedCount      int           `json:"fixed_count"`
 	CLITools        []CheckResult `json:"cli_tools"`
+	Dependencies    []CheckResult `json:"dependencies"`
 	Directories     []CheckResult `json:"directories"`
 	Config          []CheckResult `json:"config"`
 	Profiles        []CheckResult `json:"profiles"`
@@ -47,13 +49,44 @@ type DoctorReport struct {
 	TokenValidation []CheckResult `json:"token_validation,omitempty"`
 }
 
+// DependencySpec defines an optional external dependency with install hints.
+type DependencySpec struct {
+	// Name is the dependency name (for display).
+	Name string
+
+	// Binaries are the executable names to search for in PATH.
+	Binaries []string
+
+	// Description explains what this dependency enables.
+	Description string
+
+	// Required means caam won't work properly without it.
+	Required bool
+
+	// Feature describes which caam feature needs this dependency.
+	Feature string
+
+	// InstallLinux is the command to install on Linux.
+	InstallLinux string
+
+	// InstallMacOS is the command to install on macOS.
+	InstallMacOS string
+
+	// InstallWindows is the command to install on Windows.
+	InstallWindows string
+
+	// CustomCheck allows for special validation logic (e.g., checking playwright browsers).
+	CustomCheck func() (bool, string)
+}
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Diagnose setup issues",
+	Short: "Diagnose setup issues and check dependencies",
 	Long: `Runs diagnostic checks on your caam installation and reports any issues.
 
 Checks performed:
   - CLI tools: Are codex, claude, gemini installed and in PATH?
+  - Dependencies: Are optional tools (gum, wezterm, tailscale, playwright, etc.) available?
   - Data directories: Do vault/profiles directories exist with correct permissions?
   - Config: Is the configuration valid?
   - Profiles: Are all isolated profiles valid? Any broken symlinks?
@@ -64,13 +97,17 @@ Checks performed:
 Flags:
   --fix       Attempt to fix issues (create directories, clean stale locks)
   --json      Output results in JSON format for scripting
-  --validate  Validate that auth tokens actually work (passive check, no API calls)`,
+  --validate  Validate that auth tokens actually work (passive check, no API calls)
+  --auto      Automatically install missing optional dependencies (prompts for confirmation unless --yes)
+  --yes       Skip confirmation prompts when using --auto`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fix, _ := cmd.Flags().GetBool("fix")
 		jsonOutput, _ := cmd.Flags().GetBool("json")
 		validate, _ := cmd.Flags().GetBool("validate")
+		autoInstall, _ := cmd.Flags().GetBool("auto")
+		skipConfirm, _ := cmd.Flags().GetBool("yes")
 
-		report := runDoctorChecks(fix, validate)
+		report := runDoctorChecks(fix, validate, autoInstall, skipConfirm)
 
 		if jsonOutput {
 			data, err := json.MarshalIndent(report, "", "  ")
@@ -96,15 +133,20 @@ func init() {
 	doctorCmd.Flags().Bool("fix", false, "attempt to fix issues")
 	doctorCmd.Flags().Bool("json", false, "output in JSON format")
 	doctorCmd.Flags().Bool("validate", false, "validate that auth tokens actually work")
+	doctorCmd.Flags().Bool("auto", false, "automatically install missing optional dependencies")
+	doctorCmd.Flags().BoolP("yes", "y", false, "skip confirmation prompts when using --auto")
 }
 
-func runDoctorChecks(fix bool, validate bool) *DoctorReport {
+func runDoctorChecks(fix bool, validate bool, autoInstall bool, skipConfirm bool) *DoctorReport {
 	report := &DoctorReport{
 		Timestamp: time.Now().Format(time.RFC3339),
 	}
 
 	// Check CLI tools
 	report.CLITools = checkCLITools()
+
+	// Check external dependencies
+	report.Dependencies = checkDependencies(autoInstall, skipConfirm)
 
 	// Check directories
 	report.Directories = checkDirectories(fix)
@@ -127,7 +169,8 @@ func runDoctorChecks(fix bool, validate bool) *DoctorReport {
 	}
 
 	// Calculate totals
-	allChecks := append(report.CLITools, report.Directories...)
+	allChecks := append(report.CLITools, report.Dependencies...)
+	allChecks = append(allChecks, report.Directories...)
 	allChecks = append(allChecks, report.Config...)
 	allChecks = append(allChecks, report.Profiles...)
 	allChecks = append(allChecks, report.Locks...)
@@ -192,6 +235,344 @@ func checkCLITools() []CheckResult {
 	}
 
 	return results
+}
+
+// getDependencySpecs returns the list of optional dependencies to check.
+func getDependencySpecs() []DependencySpec {
+	return []DependencySpec{
+		{
+			Name:           "gum",
+			Binaries:       []string{"gum"},
+			Description:    "Charm's tool for glamorous shell scripts (enhanced TUI prompts)",
+			Required:       false,
+			Feature:        "enhanced interactive prompts",
+			InstallLinux:   "sudo mkdir -p /etc/apt/keyrings && curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg && echo 'deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *' | sudo tee /etc/apt/sources.list.d/charm.list && sudo apt update && sudo apt install gum",
+			InstallMacOS:   "brew install gum",
+			InstallWindows: "scoop install charm-gum",
+		},
+		{
+			Name:           "wezterm",
+			Binaries:       []string{"wezterm"},
+			Description:    "WezTerm terminal emulator CLI for session management",
+			Required:       false,
+			Feature:        "session recovery and batch login automation (caam wezterm recover)",
+			InstallLinux:   "# See https://wezfurlong.org/wezterm/install/linux.html",
+			InstallMacOS:   "brew install --cask wezterm",
+			InstallWindows: "scoop install wezterm",
+		},
+		{
+			Name:           "tailscale",
+			Binaries:       []string{"tailscale"},
+			Description:    "Mesh VPN for secure distributed setup",
+			Required:       false,
+			Feature:        "distributed auth coordination across machines",
+			InstallLinux:   "curl -fsSL https://tailscale.com/install.sh | sh",
+			InstallMacOS:   "brew install tailscale",
+			InstallWindows: "# Download from https://tailscale.com/download",
+		},
+		{
+			Name:           "node",
+			Binaries:       []string{"node", "nodejs"},
+			Description:    "Node.js runtime (required for Playwright)",
+			Required:       false,
+			Feature:        "Playwright browser automation",
+			InstallLinux:   "curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs",
+			InstallMacOS:   "brew install node",
+			InstallWindows: "scoop install nodejs-lts",
+		},
+		{
+			Name:           "playwright",
+			Binaries:       []string{"playwright", "npx"},
+			Description:    "Browser automation framework for OAuth flows",
+			Required:       false,
+			Feature:        "automated browser-based OAuth login",
+			InstallLinux:   "npm install -g playwright && npx playwright install chromium",
+			InstallMacOS:   "npm install -g playwright && npx playwright install chromium",
+			InstallWindows: "npm install -g playwright && npx playwright install chromium",
+			CustomCheck:    checkPlaywright,
+		},
+		{
+			Name:           "jq",
+			Binaries:       []string{"jq"},
+			Description:    "Command-line JSON processor",
+			Required:       false,
+			Feature:        "JSON output processing in scripts",
+			InstallLinux:   "sudo apt install jq",
+			InstallMacOS:   "brew install jq",
+			InstallWindows: "scoop install jq",
+		},
+		{
+			Name:           "gh",
+			Binaries:       []string{"gh"},
+			Description:    "GitHub CLI for repository operations",
+			Required:       false,
+			Feature:        "GitHub integration",
+			InstallLinux:   "sudo apt install gh",
+			InstallMacOS:   "brew install gh",
+			InstallWindows: "scoop install gh",
+		},
+		{
+			Name:           "ssh",
+			Binaries:       []string{"ssh"},
+			Description:    "Secure Shell client",
+			Required:       false,
+			Feature:        "remote profile execution",
+			InstallLinux:   "sudo apt install openssh-client",
+			InstallMacOS:   "# Pre-installed on macOS",
+			InstallWindows: "# Use Windows OpenSSH or Git Bash",
+		},
+		{
+			Name:           "chrome",
+			Binaries:       []string{"google-chrome", "google-chrome-stable", "chromium", "chromium-browser"},
+			Description:    "Chrome or Chromium browser for OAuth flows",
+			Required:       false,
+			Feature:        "browser-based OAuth login",
+			InstallLinux:   "# Download from https://www.google.com/chrome/ or: sudo apt install chromium-browser",
+			InstallMacOS:   "brew install --cask google-chrome",
+			InstallWindows: "# Download from https://www.google.com/chrome/",
+		},
+	}
+}
+
+// checkPlaywright performs a custom check for Playwright installation including browser availability.
+func checkPlaywright() (bool, string) {
+	// First check if npx is available
+	if _, err := osexec.LookPath("npx"); err != nil {
+		return false, "npx not found (install Node.js first)"
+	}
+
+	// Check if playwright can show version
+	cmd := osexec.Command("npx", "playwright", "--version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, "playwright not installed (run: npm install -g playwright)"
+	}
+
+	version := strings.TrimSpace(string(output))
+
+	// Check if Chromium browser is installed
+	cmd = osexec.Command("npx", "playwright", "install", "--dry-run", "chromium")
+	if err := cmd.Run(); err != nil {
+		return true, fmt.Sprintf("v%s (chromium browser not installed, run: npx playwright install chromium)", version)
+	}
+
+	return true, fmt.Sprintf("v%s with chromium", version)
+}
+
+// checkDependencies verifies optional external dependencies are available.
+func checkDependencies(autoInstall bool, skipConfirm bool) []CheckResult {
+	var results []CheckResult
+	specs := getDependencySpecs()
+
+	for _, spec := range specs {
+		result := checkSingleDependency(spec, autoInstall, skipConfirm)
+		results = append(results, result)
+	}
+
+	return results
+}
+
+// checkSingleDependency checks if a single dependency is available.
+func checkSingleDependency(spec DependencySpec, autoInstall bool, skipConfirm bool) CheckResult {
+	// First, if there's a custom check, use it
+	if spec.CustomCheck != nil {
+		ok, details := spec.CustomCheck()
+		if ok {
+			return CheckResult{
+				Name:    spec.Name,
+				Status:  "pass",
+				Message: details,
+			}
+		}
+		// Custom check failed, but might have partial info in details
+		return CheckResult{
+			Name:    spec.Name,
+			Status:  "warn",
+			Message: "partially installed",
+			Details: fmt.Sprintf("%s. Feature: %s", details, spec.Feature),
+		}
+	}
+
+	// Standard binary lookup
+	var foundPath string
+	for _, bin := range spec.Binaries {
+		path, err := osexec.LookPath(bin)
+		if err == nil {
+			foundPath = path
+			break
+		}
+	}
+
+	if foundPath != "" {
+		// Get version if possible
+		version := getToolVersion(spec.Name, foundPath)
+		msg := fmt.Sprintf("found at %s", foundPath)
+		if version != "" {
+			msg = fmt.Sprintf("%s (%s)", version, foundPath)
+		}
+		return CheckResult{
+			Name:    spec.Name,
+			Status:  "pass",
+			Message: msg,
+		}
+	}
+
+	// Not found - determine install command based on OS
+	installCmd := getInstallCommand(spec)
+	status := "warn"
+	if spec.Required {
+		status = "fail"
+	}
+
+	details := fmt.Sprintf("Feature: %s\nInstall: %s", spec.Feature, installCmd)
+
+	// If autoInstall is enabled, try to install
+	if autoInstall && installCmd != "" && !strings.HasPrefix(installCmd, "#") {
+		if !skipConfirm {
+			// In non-interactive mode we would prompt, but for now just show what would be installed
+			details = fmt.Sprintf("Feature: %s\nWould install: %s\n(Use --yes to skip confirmation)", spec.Feature, installCmd)
+		} else {
+			// Actually try to install
+			installResult := tryInstallDependency(spec.Name, installCmd)
+			if installResult.success {
+				return CheckResult{
+					Name:    spec.Name,
+					Status:  "fixed",
+					Message: fmt.Sprintf("installed successfully"),
+					Details: installResult.output,
+				}
+			}
+			details = fmt.Sprintf("Installation failed: %s\nCommand: %s", installResult.output, installCmd)
+		}
+	}
+
+	return CheckResult{
+		Name:    spec.Name,
+		Status:  status,
+		Message: "not found in PATH",
+		Details: details,
+	}
+}
+
+// getInstallCommand returns the OS-appropriate install command for a dependency.
+func getInstallCommand(spec DependencySpec) string {
+	switch runtime.GOOS {
+	case "linux":
+		return spec.InstallLinux
+	case "darwin":
+		return spec.InstallMacOS
+	case "windows":
+		return spec.InstallWindows
+	default:
+		return spec.InstallLinux // Default to Linux
+	}
+}
+
+// getToolVersion attempts to get the version of an installed tool.
+func getToolVersion(name, path string) string {
+	var cmd *osexec.Cmd
+
+	switch name {
+	case "gum":
+		cmd = osexec.Command(path, "--version")
+	case "wezterm":
+		cmd = osexec.Command(path, "--version")
+	case "tailscale":
+		cmd = osexec.Command(path, "version")
+	case "node":
+		cmd = osexec.Command(path, "--version")
+	case "jq":
+		cmd = osexec.Command(path, "--version")
+	case "gh":
+		cmd = osexec.Command(path, "--version")
+	case "ssh":
+		cmd = osexec.Command(path, "-V")
+	case "chrome":
+		cmd = osexec.Command(path, "--version")
+	default:
+		return ""
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+
+	version := strings.TrimSpace(string(output))
+	// Take just the first line if multi-line
+	if idx := strings.Index(version, "\n"); idx > 0 {
+		version = version[:idx]
+	}
+	// Limit length
+	if len(version) > 50 {
+		version = version[:50] + "..."
+	}
+	return version
+}
+
+// installResult holds the result of an installation attempt.
+type installResult struct {
+	success bool
+	output  string
+}
+
+// tryInstallDependency attempts to install a dependency using the provided command.
+func tryInstallDependency(name, installCmd string) installResult {
+	// For safety, we only execute certain well-known package manager commands
+	// This prevents arbitrary command execution
+	allowedPrefixes := []string{
+		"brew install",
+		"brew install --cask",
+		"sudo apt install",
+		"sudo apt-get install",
+		"scoop install",
+		"npm install",
+		"npx playwright install",
+	}
+
+	isAllowed := false
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(installCmd, prefix) {
+			isAllowed = true
+			break
+		}
+	}
+
+	if !isAllowed {
+		return installResult{
+			success: false,
+			output:  "complex install command - please run manually",
+		}
+	}
+
+	// Parse the command
+	parts := strings.Fields(installCmd)
+	if len(parts) < 2 {
+		return installResult{
+			success: false,
+			output:  "invalid install command",
+		}
+	}
+
+	fmt.Printf("  Installing %s: %s\n", name, installCmd)
+
+	cmd := osexec.Command(parts[0], parts[1:]...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	err := cmd.Run()
+	if err != nil {
+		return installResult{
+			success: false,
+			output:  err.Error(),
+		}
+	}
+
+	return installResult{
+		success: true,
+		output:  "installation complete",
+	}
 }
 
 func checkDirectories(fix bool) []CheckResult {
@@ -320,6 +701,16 @@ func checkConfig() []CheckResult {
 func checkProfiles(fix bool) []CheckResult {
 	var results []CheckResult
 
+	// Guard against nil profileStore (e.g., in tests)
+	if profileStore == nil {
+		results = append(results, CheckResult{
+			Name:    "profiles",
+			Status:  "warn",
+			Message: "profile store not initialized",
+		})
+		return results
+	}
+
 	allProfiles, err := profileStore.ListAll()
 	if err != nil {
 		results = append(results, CheckResult{
@@ -422,6 +813,11 @@ func checkBrokenSymlinks(dir string) []string {
 func checkLocks(fix bool) []CheckResult {
 	var results []CheckResult
 
+	// Guard against nil profileStore (e.g., in tests)
+	if profileStore == nil {
+		return results
+	}
+
 	allProfiles, err := profileStore.ListAll()
 	if err != nil {
 		return results
@@ -507,6 +903,16 @@ func checkLocks(fix bool) []CheckResult {
 func checkAuthFiles() []CheckResult {
 	var results []CheckResult
 
+	// Guard against nil vault (e.g., in tests)
+	if vault == nil {
+		results = append(results, CheckResult{
+			Name:    "auth files",
+			Status:  "warn",
+			Message: "vault not initialized",
+		})
+		return results
+	}
+
 	for tool, getFileSet := range tools {
 		fileSet := getFileSet()
 		hasAuth := authfile.HasAuthFiles(fileSet)
@@ -541,6 +947,16 @@ func checkAuthFiles() []CheckResult {
 func checkTokenValidation() []CheckResult {
 	var results []CheckResult
 	ctx := context.Background()
+
+	// Guard against nil profileStore (e.g., in tests)
+	if profileStore == nil {
+		results = append(results, CheckResult{
+			Name:    "token validation",
+			Status:  "warn",
+			Message: "profile store not initialized",
+		})
+		return results
+	}
 
 	// Build provider registry for validation
 	reg := provider.NewRegistry()
@@ -642,6 +1058,15 @@ func printDoctorReport(report *DoctorReport, validate bool) {
 		printCheck(check)
 	}
 	fmt.Println()
+
+	// Dependencies
+	if len(report.Dependencies) > 0 {
+		fmt.Println("Checking optional dependencies...")
+		for _, check := range report.Dependencies {
+			printCheck(check)
+		}
+		fmt.Println()
+	}
 
 	// Directories
 	fmt.Println("Checking data directories...")

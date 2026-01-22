@@ -521,7 +521,7 @@ func TestCollectSessionsWithFilter(t *testing.T) {
 // TestRunDoctorChecks tests full doctor check execution.
 func TestRunDoctorChecks(t *testing.T) {
 	// Run without fix or validate
-	report := runDoctorChecks(false, false)
+	report := runDoctorChecks(false, false, false, false)
 
 	if report == nil {
 		t.Fatal("Expected non-nil report")
@@ -533,7 +533,7 @@ func TestRunDoctorChecks(t *testing.T) {
 	}
 
 	// Should have some checks
-	totalChecks := len(report.CLITools) + len(report.Directories) +
+	totalChecks := len(report.CLITools) + len(report.Dependencies) + len(report.Directories) +
 		len(report.Config) + len(report.Profiles) +
 		len(report.Locks) + len(report.AuthFiles)
 
@@ -558,8 +558,8 @@ func TestRunDoctorChecksWithFix(t *testing.T) {
 	os.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Setenv("XDG_DATA_HOME", oldXDG)
 
-	// Run with fix
-	report := runDoctorChecks(true, false)
+	// Run with fix (autoInstall=false, skipConfirm=false)
+	report := runDoctorChecks(true, false, false, false)
 
 	if report == nil {
 		t.Fatal("Expected non-nil report")
@@ -567,5 +567,157 @@ func TestRunDoctorChecksWithFix(t *testing.T) {
 
 	// May have fixed some issues
 	t.Logf("Fixed %d issues", report.FixedCount)
+}
+
+// TestGetDependencySpecs tests the dependency specification list.
+func TestGetDependencySpecs(t *testing.T) {
+	specs := getDependencySpecs()
+
+	// Should have at least the expected dependencies
+	if len(specs) < 5 {
+		t.Errorf("Expected at least 5 dependency specs, got %d", len(specs))
+	}
+
+	// Check that we have expected dependencies
+	expectedDeps := []string{"gum", "wezterm", "tailscale", "node", "jq"}
+	specNames := make(map[string]bool)
+	for _, spec := range specs {
+		specNames[spec.Name] = true
+	}
+
+	for _, expected := range expectedDeps {
+		if !specNames[expected] {
+			t.Errorf("Expected dependency %q not found in specs", expected)
+		}
+	}
+
+	// Each spec should have required fields
+	for _, spec := range specs {
+		if spec.Name == "" {
+			t.Error("Dependency spec has empty Name")
+		}
+		if len(spec.Binaries) == 0 {
+			t.Errorf("Dependency %q has no binaries", spec.Name)
+		}
+		if spec.Feature == "" {
+			t.Errorf("Dependency %q has no feature description", spec.Name)
+		}
+	}
+}
+
+// TestCheckSingleDependency tests individual dependency checks.
+func TestCheckSingleDependency(t *testing.T) {
+	// Test a dependency that likely exists (ssh on most systems)
+	sshSpec := DependencySpec{
+		Name:        "ssh",
+		Binaries:    []string{"ssh"},
+		Description: "Secure Shell client",
+		Required:    false,
+		Feature:     "remote profile execution",
+	}
+
+	result := checkSingleDependency(sshSpec, false, false)
+	// SSH should exist on most systems, but we won't fail if it doesn't
+	if result.Name != "ssh" {
+		t.Errorf("Expected result name 'ssh', got %q", result.Name)
+	}
+	if result.Status != "pass" && result.Status != "warn" {
+		t.Errorf("Expected status 'pass' or 'warn', got %q", result.Status)
+	}
+}
+
+// TestCheckSingleDependencyNotFound tests dependency check for missing tool.
+func TestCheckSingleDependencyNotFound(t *testing.T) {
+	// Test a dependency that definitely doesn't exist
+	fakeSpec := DependencySpec{
+		Name:           "fake-tool-that-doesnt-exist-12345",
+		Binaries:       []string{"fake-tool-that-doesnt-exist-12345"},
+		Description:    "Fake tool",
+		Required:       false,
+		Feature:        "testing",
+		InstallLinux:   "apt install fake",
+		InstallMacOS:   "brew install fake",
+		InstallWindows: "scoop install fake",
+	}
+
+	result := checkSingleDependency(fakeSpec, false, false)
+	if result.Status != "warn" {
+		t.Errorf("Expected status 'warn' for missing tool, got %q", result.Status)
+	}
+	if result.Message != "not found in PATH" {
+		t.Errorf("Expected message 'not found in PATH', got %q", result.Message)
+	}
+}
+
+// TestCheckDependencies tests the full dependency check.
+func TestCheckDependencies(t *testing.T) {
+	results := checkDependencies(false, false)
+
+	// Should have results for each dependency spec
+	specs := getDependencySpecs()
+	if len(results) != len(specs) {
+		t.Errorf("Expected %d results, got %d", len(specs), len(results))
+	}
+
+	// Each result should have a valid status
+	for _, result := range results {
+		switch result.Status {
+		case "pass", "warn", "fail", "fixed":
+			// OK
+		default:
+			t.Errorf("Unexpected status %q for %s", result.Status, result.Name)
+		}
+	}
+}
+
+// TestGetInstallCommand tests OS-specific install command selection.
+func TestGetInstallCommand(t *testing.T) {
+	spec := DependencySpec{
+		InstallLinux:   "apt install foo",
+		InstallMacOS:   "brew install foo",
+		InstallWindows: "scoop install foo",
+	}
+
+	// The result depends on the current OS
+	cmd := getInstallCommand(spec)
+	if cmd == "" {
+		t.Error("Expected non-empty install command")
+	}
+
+	// Just verify it returns one of the expected commands
+	validCommands := []string{"apt install foo", "brew install foo", "scoop install foo"}
+	found := false
+	for _, valid := range validCommands {
+		if cmd == valid {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Unexpected install command: %q", cmd)
+	}
+}
+
+// TestDependencySpecFields tests that all dependency specs have required fields.
+func TestDependencySpecFields(t *testing.T) {
+	specs := getDependencySpecs()
+
+	for _, spec := range specs {
+		t.Run(spec.Name, func(t *testing.T) {
+			if spec.Name == "" {
+				t.Error("Name is empty")
+			}
+			if len(spec.Binaries) == 0 {
+				t.Error("Binaries is empty")
+			}
+			if spec.Feature == "" {
+				t.Error("Feature is empty")
+			}
+			// At least one install command should be present
+			if spec.InstallLinux == "" && spec.InstallMacOS == "" && spec.InstallWindows == "" {
+				t.Error("All install commands are empty")
+			}
+		})
+	}
 }
 
