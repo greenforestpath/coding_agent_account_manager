@@ -33,7 +33,7 @@ caam can proactively refresh tokens in two scenarios:
 #### Technical Requirements
 - Parse token expiry from auth files (provider-specific formats)
 - Implement OAuth refresh for each provider:
-  - **Claude Code**: Uses Anthropic's OAuth flow
+  - **Claude Code**: ⚠️ **NOT SUPPORTED** — OAuth endpoint undocumented; tokens are opaque. Users must re-authenticate via `/login`. See [CLAUDE_AUTH_INVENTORY.md](CLAUDE_AUTH_INVENTORY.md) (CLAUDE-006).
   - **OpenAI Codex**: JSON body to `auth.openai.com/oauth/token`
   - **Google Gemini**: Form-encoded to `oauth2.googleapis.com/token`
 - Atomic credential file updates (already have this pattern!)
@@ -445,9 +445,13 @@ Options considered:
 ## Appendix: Provider OAuth Details
 
 ### Claude Code
-- Auth files: `~/.claude.json`, `~/.config/claude-code/auth.json`
+- Auth files: `~/.claude/.credentials.json`, `~/.claude.json`, `~/.config/claude-code/auth.json`
 - API key mode: `~/.claude/settings.json` (apiKeyHelper)
-- Token endpoint: TBD (need to reverse engineer)
+- Token endpoint: ⚠️ **NOT SUPPORTED** — The Anthropic OAuth refresh endpoint is undocumented and speculative. Claude Code handles token refresh internally. Attempting external refresh may cause auth corruption.
+- Identity: Email and accountId are NOT available in current auth format; tokens are opaque (not JWTs)
+- Re-authentication: Use `/login` command when tokens expire
+
+**Note:** See [CLAUDE_AUTH_INVENTORY.md](CLAUDE_AUTH_INVENTORY.md) for the complete audit of Claude auth assumptions.
 
 ### OpenAI Codex
 - Auth file: `~/.codex/auth.json`

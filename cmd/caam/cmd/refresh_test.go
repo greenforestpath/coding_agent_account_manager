@@ -243,3 +243,76 @@ func TestRefreshSingle_GeminiUpdatesSettings(t *testing.T) {
 		t.Fatalf("expiry is empty")
 	}
 }
+
+// TestRefreshSingle_ClaudeReturnsUnsupported verifies that Claude refresh is correctly
+// disabled and returns a graceful skip (not an error) when attempted.
+// This is a regression test for caam-tfzr.1 / CLAUDE-006.
+// See: docs/CLAUDE_AUTH_INVENTORY.md
+func TestRefreshSingle_ClaudeReturnsUnsupported(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Setup temp CAAM_HOME to avoid affecting real config
+	oldCaamHome := os.Getenv("CAAM_HOME")
+	t.Cleanup(func() { _ = os.Setenv("CAAM_HOME", oldCaamHome) })
+	_ = os.Setenv("CAAM_HOME", tmpDir)
+
+	oldVault := vault
+	vault = authfile.NewVault(filepath.Join(tmpDir, "vault"))
+	t.Cleanup(func() { vault = oldVault })
+
+	oldHealthStore := healthStore
+	healthStore = health.NewStorage(filepath.Join(tmpDir, "health.json"))
+	t.Cleanup(func() { healthStore = oldHealthStore })
+
+	profileDir := vault.ProfilePath("claude", "test-profile")
+	if err := os.MkdirAll(profileDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Create a Claude credentials file with short expiry to trigger refresh attempt
+	credentials := map[string]any{
+		"claudeAiOauth": map[string]any{
+			"accessToken":      "sk-ant-oat01-test-opaque-token",
+			"refreshToken":     "sk-ant-ort01-test-refresh-token",
+			"expiresAt":        time.Now().Add(2 * time.Minute).UnixMilli(),
+			"subscriptionType": "claude_pro_2025",
+		},
+	}
+	credRaw, err := json.MarshalIndent(credentials, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent() error = %v", err)
+	}
+	credPath := filepath.Join(profileDir, ".credentials.json")
+	if err := os.WriteFile(credPath, credRaw, 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	// Attempt refresh - should return nil (graceful skip) not an error
+	// because Claude refresh is disabled and handled via ErrUnsupported
+	err = refreshSingle(context.Background(), "claude", "test-profile", 10*time.Minute, false, false, true)
+
+	// Claude refresh should NOT return an error - it's skipped gracefully
+	if err != nil {
+		t.Fatalf("refreshSingle() should return nil for unsupported Claude refresh, got error = %v", err)
+	}
+
+	// Verify the file wasn't modified (no refresh occurred)
+	afterRaw, err := os.ReadFile(credPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var afterCreds map[string]any
+	if err := json.Unmarshal(afterRaw, &afterCreds); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	oauth, ok := afterCreds["claudeAiOauth"].(map[string]any)
+	if !ok {
+		t.Fatal("claudeAiOauth not found after refresh attempt")
+	}
+
+	// Access token should be unchanged (no refresh occurred)
+	if got := oauth["accessToken"]; got != "sk-ant-oat01-test-opaque-token" {
+		t.Errorf("accessToken was modified unexpectedly: got %v", got)
+	}
+}
