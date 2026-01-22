@@ -143,6 +143,11 @@ Each profile gets its own `$HOME` and `$CODEX_HOME` with symlinks to your real `
 
 **Notes:** Claude Max has a 5-hour rolling usage window. When you hit it, you'll see rate limit messages. Switch accounts to continue.
 
+**Limitations:**
+- **Email/Identity Detection:** Claude's current auth format does not expose email or account ID. Profile names default to timestamp-based auto-names (`auto-YYYYMMDD-HHMMSS`) unless you specify a name when backing up.
+- **Automatic Token Refresh:** Claude Code manages token refresh internally. CAAM cannot refresh Claude tokens—use `/login` in Claude Code if tokens expire.
+- **Usage API:** Claude's usage API is undocumented and may not be reliable.
+
 ### Codex CLI (GPT Pro)
 
 **Subscription:** GPT Pro ($200/month unlimited)
@@ -755,8 +760,8 @@ Special thanks to **[@darvell](https://github.com/darvell)** for inspiring this 
 
 While codex-pool answers "which account should handle THIS request?" (real-time proxy), caam answers "which account should I USE for my work session?" (profile manager). The Smart Profile Management features adapt codex-pool's intelligence to caam's architecture:
 
-- **Proactive Token Refresh** — Automatically refreshes OAuth tokens before they expire, preventing mid-session auth failures
-- **Profile Health Scoring** — Visual indicators (🟢🟡🔴) showing token status, error history, penalty decay, and plan type
+- **Proactive Token Refresh** — Automatically refreshes OAuth tokens before they expire, preventing mid-session auth failures *(not available for Claude—use `/login` to re-authenticate)*
+- **Profile Health Scoring** — Visual indicators (🟢🟡🔴) showing token status, error history, penalty decay, and plan type *(Claude profiles may show limited identity info)*
 - **Smart Rotation** — Multi-factor algorithm picks the best available profile based on health, cooldown, recency, and usage patterns
 - **Cooldown Tracking** — Database-backed tracking of rate limit hits with configurable cooldown windows
 - **Automatic Failover** — The `caam run` wrapper detects rate limits and seamlessly switches to another account

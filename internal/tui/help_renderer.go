@@ -279,6 +279,25 @@ caam uses the associated profile automatically.
 
 ---
 
+## Provider Notes
+
+### Claude Code
+- **Identity:** Email/account ID not available in current Claude auth format.
+  Profile names will be auto-generated (` + "`auto-YYYYMMDD-HHMMSS`" + `) unless specified.
+- **Token Refresh:** Claude manages tokens internally. Use ` + "`/login`" + ` in Claude Code
+  to re-authenticate if needed.
+- **Recommended Workflow:** ` + "`backup`" + ` → ` + "`clear`" + ` → ` + "`/login`" + ` → ` + "`backup`" + ` → ` + "`activate`" + `
+
+### Codex CLI
+- Full identity detection via JWT tokens
+- Token refresh supported
+
+### Gemini CLI
+- Full identity detection
+- Token refresh supported
+
+---
+
 *Press any key to return*
 `
 }
