@@ -212,13 +212,14 @@ func truncateURL(url string) string {
 }
 
 type coordinatorFileConfig struct {
-	Port         int    `json:"port"`
-	PollInterval string `json:"poll_interval"`
-	AuthTimeout  string `json:"auth_timeout"`
-	StateTimeout string `json:"state_timeout"`
-	ResumePrompt string `json:"resume_prompt"`
-	OutputLines  int    `json:"output_lines"`
-	Backend      string `json:"backend"`
+	Port           int    `json:"port"`
+	PollInterval   string `json:"poll_interval"`
+	AuthTimeout    string `json:"auth_timeout"`
+	StateTimeout   string `json:"state_timeout"`
+	ResumePrompt   string `json:"resume_prompt"`
+	ResumeCooldown string `json:"resume_cooldown"`
+	OutputLines    int    `json:"output_lines"`
+	Backend        string `json:"backend"`
 }
 
 func loadCoordinatorConfig(path string) (coordinator.Config, int, error) {
@@ -260,6 +261,13 @@ func loadCoordinatorConfig(path string) (coordinator.Config, int, error) {
 	}
 	if raw.ResumePrompt != "" {
 		cfg.ResumePrompt = raw.ResumePrompt
+	}
+	if raw.ResumeCooldown != "" {
+		if d, err := time.ParseDuration(raw.ResumeCooldown); err == nil {
+			cfg.ResumeCooldown = d
+		} else {
+			return coordinator.Config{}, 0, fmt.Errorf("parse resume_cooldown: %w", err)
+		}
 	}
 	if raw.OutputLines != 0 {
 		cfg.OutputLines = raw.OutputLines

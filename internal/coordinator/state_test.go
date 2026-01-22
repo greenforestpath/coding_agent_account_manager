@@ -7,6 +7,92 @@ import (
 	"time"
 )
 
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "no ANSI codes",
+			input:    "plain text",
+			expected: "plain text",
+		},
+		{
+			name:     "simple color code",
+			input:    "\x1b[32mgreen text\x1b[0m",
+			expected: "green text",
+		},
+		{
+			name:     "bold text",
+			input:    "\x1b[1mbold\x1b[0m",
+			expected: "bold",
+		},
+		{
+			name:     "multiple codes",
+			input:    "\x1b[1m\x1b[32mLogged in as\x1b[0m user@example.com",
+			expected: "Logged in as user@example.com",
+		},
+		{
+			name:     "complex ANSI with cursor movement",
+			input:    "\x1b[2J\x1b[H\x1b[32mWelcome back!\x1b[0m",
+			expected: "Welcome back!",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripANSI(tt.input)
+			if got != tt.expected {
+				t.Errorf("StripANSI() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestDetectStateWithANSI(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected PaneState
+	}{
+		{
+			name:     "login success with ANSI colors",
+			output:   "\x1b[1m\x1b[32mLogged in as\x1b[0m user@example.com",
+			expected: StateResuming,
+		},
+		{
+			name:     "rate limit with ANSI",
+			output:   "\x1b[31mYou've hit your limit\x1b[0m. This resets 2pm",
+			expected: StateRateLimited,
+		},
+		{
+			name:     "welcome back with styling",
+			output:   "\x1b[1mWelcome back!\x1b[0m Session resumed.",
+			expected: StateResuming,
+		},
+		{
+			name:     "login failed with colors",
+			output:   "\x1b[31mLogin failed\x1b[0m: invalid code",
+			expected: StateFailed,
+		},
+		{
+			name:     "select method with ANSI",
+			output:   "\x1b[36mSelect login method:\x1b[0m\n1. Claude account with subscription",
+			expected: StateAwaitingMethodSelect,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, _ := DetectState(tt.output)
+			if state != tt.expected {
+				t.Errorf("DetectState() = %v, want %v", state, tt.expected)
+			}
+		})
+	}
+}
+
 func TestDetectState(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -288,5 +374,77 @@ func TestCoordinator_AuthPendingProcessesWithoutOutputChange(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected code to be injected, sent=%v", sent)
+	}
+}
+
+func TestCoordinator_ResumeCooldownPreventsDoubleInjection(t *testing.T) {
+	client := &fakePaneClient{
+		panes:  []Pane{{PaneID: 1}},
+		output: "Logged in as user@example.com", // Login success output
+	}
+
+	cfg := DefaultConfig()
+	cfg.ResumeCooldown = 5 * time.Second // Short cooldown for testing
+	coord := New(cfg)
+	coord.paneClient = client
+
+	tracker := NewPaneTracker(1)
+	tracker.LastOutput = ""
+	tracker.SetState(StateResuming)
+	coord.trackers[1] = tracker
+
+	ctx := context.Background()
+
+	// First call should inject resume prompt
+	coord.handleResumingState(ctx, tracker, client.output)
+	sentBefore := client.sentText()
+	if len(sentBefore) != 1 {
+		t.Fatalf("expected 1 sent message after first call, got %d: %v", len(sentBefore), sentBefore)
+	}
+
+	// Verify the resume prompt was sent
+	if sentBefore[0] != cfg.ResumePrompt {
+		t.Fatalf("expected resume prompt %q, got %q", cfg.ResumePrompt, sentBefore[0])
+	}
+
+	// Create a new tracker (simulating next poll cycle) in resuming state
+	tracker2 := NewPaneTracker(1)
+	tracker2.SetState(StateResuming)
+	tracker2.SetCooldown("resume", cfg.ResumeCooldown) // Copy the cooldown
+
+	// Second call with cooldown active should NOT inject
+	coord.handleResumingState(ctx, tracker2, client.output)
+	sentAfter := client.sentText()
+	// Should still be just 1 message (no additional injection)
+	if len(sentAfter) != 1 {
+		t.Fatalf("expected 1 sent message after second call (cooldown active), got %d: %v", len(sentAfter), sentAfter)
+	}
+}
+
+func TestExtractOAuthURL_WithANSI(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected string
+	}{
+		{
+			name:     "URL with ANSI prefix",
+			output:   "\x1b[36mOpen: https://claude.ai/oauth/authorize?code=abc\x1b[0m",
+			expected: "https://claude.ai/oauth/authorize?code=abc",
+		},
+		{
+			name:     "URL surrounded by colors",
+			output:   "\x1b[1mVisit\x1b[0m https://claude.ai/oauth/authorize?foo=bar \x1b[32min browser\x1b[0m",
+			expected: "https://claude.ai/oauth/authorize?foo=bar",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			url := ExtractOAuthURL(tt.output)
+			if url != tt.expected {
+				t.Errorf("ExtractOAuthURL() = %q, want %q", url, tt.expected)
+			}
+		})
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // PaneState represents the authentication state of a monitored pane.
@@ -283,29 +285,45 @@ var Patterns = struct {
 	UsageLimitReset: regexp.MustCompile(`resets\s+(\d+[ap]m)`),
 }
 
+// StripANSI removes ANSI escape codes from terminal output for pattern matching.
+// This ensures patterns like "Logged in as" match even when wrapped in color codes.
+func StripANSI(s string) string {
+	return ansi.Strip(s)
+}
+
 // DetectState analyzes pane output and returns the detected state.
+// Output is ANSI-normalized before pattern matching to handle colored terminal output.
 func DetectState(output string) (PaneState, map[string]string) {
 	metadata := make(map[string]string)
 
+	// Strip ANSI codes for reliable pattern matching
+	normalizedOutput := StripANSI(output)
+
 	// Check for login success first (highest priority)
-	if Patterns.LoginSuccess.MatchString(output) {
+	if Patterns.LoginSuccess.MatchString(normalizedOutput) {
 		return StateResuming, metadata
 	}
 
 	// Check for login failure
-	if Patterns.LoginFailed.MatchString(output) {
+	if Patterns.LoginFailed.MatchString(normalizedOutput) {
 		return StateFailed, metadata
 	}
 
 	// Check for OAuth URL (implies awaiting URL state)
-	if match := Patterns.OAuthURL.FindString(output); match != "" {
-		metadata["oauth_url"] = match
+	// Note: URLs should still be extracted from original output to preserve full URL
+	if match := Patterns.OAuthURL.FindString(normalizedOutput); match != "" {
+		// Extract from original to preserve any URL-encoded characters
+		if origMatch := Patterns.OAuthURL.FindString(output); origMatch != "" {
+			metadata["oauth_url"] = origMatch
+		} else {
+			metadata["oauth_url"] = match
+		}
 		return StateAwaitingURL, metadata
 	}
 
 	// Check for paste prompt (means URL was shown, awaiting code)
-	if Patterns.PastePrompt.MatchString(output) {
-		// Try to extract URL from this output too
+	if Patterns.PastePrompt.MatchString(normalizedOutput) {
+		// Try to extract URL from original output too
 		if match := Patterns.OAuthURL.FindString(output); match != "" {
 			metadata["oauth_url"] = match
 		}
@@ -313,13 +331,13 @@ func DetectState(output string) (PaneState, map[string]string) {
 	}
 
 	// Check for login method selection prompt
-	if Patterns.SelectMethod.MatchString(output) {
+	if Patterns.SelectMethod.MatchString(normalizedOutput) {
 		return StateAwaitingMethodSelect, metadata
 	}
 
 	// Check for rate limit last (lowest priority, as it might be in history)
-	if Patterns.RateLimit.MatchString(output) {
-		if match := Patterns.UsageLimitReset.FindStringSubmatch(output); len(match) > 1 {
+	if Patterns.RateLimit.MatchString(normalizedOutput) {
+		if match := Patterns.UsageLimitReset.FindStringSubmatch(normalizedOutput); len(match) > 1 {
 			metadata["reset_time"] = match[1]
 		}
 		return StateRateLimited, metadata
@@ -329,6 +347,11 @@ func DetectState(output string) (PaneState, map[string]string) {
 }
 
 // ExtractOAuthURL finds and returns the OAuth URL from output.
+// Uses ANSI-stripped output to ensure clean URL extraction without
+// terminal escape codes contaminating the URL.
 func ExtractOAuthURL(output string) string {
-	return Patterns.OAuthURL.FindString(output)
+	// Always use normalized output for URL extraction to avoid ANSI codes
+	// being captured as part of the URL (e.g., trailing \x1b[0m)
+	normalizedOutput := StripANSI(output)
+	return Patterns.OAuthURL.FindString(normalizedOutput)
 }

@@ -65,6 +65,10 @@ type Config struct {
 
 	// MethodSelectCooldown is the minimum time between method selection injections per pane.
 	MethodSelectCooldown time.Duration
+
+	// ResumeCooldown is the minimum time between resume prompt injections per pane.
+	// This prevents duplicate resume prompts if the state detection triggers multiple times.
+	ResumeCooldown time.Duration
 }
 
 // DefaultConfig returns a Config with sensible defaults.
@@ -79,6 +83,7 @@ func DefaultConfig() Config {
 		LocalAgentURL:        "http://localhost:7890",
 		LoginCooldown:        5 * time.Second,
 		MethodSelectCooldown: 2 * time.Second,
+		ResumeCooldown:       10 * time.Second,
 	}
 }
 
@@ -568,16 +573,35 @@ func (c *Coordinator) handleAwaitingConfirmState(ctx context.Context, tracker *P
 }
 
 func (c *Coordinator) handleResumingState(ctx context.Context, tracker *PaneTracker, output string) {
+	// Check resume cooldown to prevent duplicate injections
+	if tracker.IsOnCooldown("resume") {
+		c.logger.Debug("resume prompt on cooldown, skipping injection",
+			"pane_id", tracker.PaneID,
+			"remaining", tracker.CooldownRemaining("resume"),
+			"action", "cooldown_skip")
+		return
+	}
+
 	// Inject resume prompt
 	c.logger.Info("injecting resume prompt",
-		"pane_id", tracker.PaneID)
+		"pane_id", tracker.PaneID,
+		"action", "resume_inject")
 
 	time.Sleep(500 * time.Millisecond)
 	if err := c.paneClient.SendText(ctx, tracker.PaneID, c.config.ResumePrompt, true); err != nil {
 		c.logger.Error("failed to inject resume prompt",
 			"pane_id", tracker.PaneID,
-			"error", err)
+			"error", err,
+			"action", "resume_inject_failed")
+		return
 	}
+
+	// Set cooldown to prevent duplicate injections
+	tracker.SetCooldown("resume", c.config.ResumeCooldown)
+	c.logger.Debug("resume prompt injected successfully",
+		"pane_id", tracker.PaneID,
+		"cooldown", c.config.ResumeCooldown,
+		"action", "resume_injected")
 
 	// Mark request complete and clean up
 	requestID := tracker.GetRequestID()
