@@ -603,6 +603,82 @@ func (v *Vault) DeleteForce(tool, profile string) error {
 	return os.RemoveAll(profileDir)
 }
 
+// CopyProfile creates a copy of a profile with a new name.
+// This is a non-destructive operation: the source profile remains unchanged.
+// Returns an error if the source doesn't exist or the destination already exists.
+func (v *Vault) CopyProfile(tool, srcProfile, dstProfile string) error {
+	srcDir, err := v.safeProfileDir(tool, srcProfile)
+	if err != nil {
+		return fmt.Errorf("invalid source profile: %w", err)
+	}
+	dstDir, err := v.safeProfileDir(tool, dstProfile)
+	if err != nil {
+		return fmt.Errorf("invalid destination profile: %w", err)
+	}
+
+	// Verify source exists
+	if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+		return fmt.Errorf("source profile %s/%s not found", tool, srcProfile)
+	}
+
+	// Verify destination doesn't exist
+	if _, err := os.Stat(dstDir); err == nil {
+		return fmt.Errorf("destination profile %s/%s already exists", tool, dstProfile)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check destination: %w", err)
+	}
+
+	// Create destination directory
+	if err := os.MkdirAll(dstDir, 0700); err != nil {
+		return fmt.Errorf("create destination dir: %w", err)
+	}
+
+	// Copy all files from source to destination
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		os.RemoveAll(dstDir) // Cleanup on failure
+		return fmt.Errorf("read source dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue // Skip subdirectories
+		}
+
+		srcPath := filepath.Join(srcDir, entry.Name())
+		dstPath := filepath.Join(dstDir, entry.Name())
+
+		if err := copyFile(srcPath, dstPath); err != nil {
+			os.RemoveAll(dstDir) // Cleanup on failure
+			return fmt.Errorf("copy %s: %w", entry.Name(), err)
+		}
+	}
+
+	// Update meta.json with new profile name
+	metaPath := filepath.Join(dstDir, "meta.json")
+	if _, err := os.Stat(metaPath); err == nil {
+		// Read and update meta.json
+		data, err := os.ReadFile(metaPath)
+		if err == nil {
+			var meta map[string]interface{}
+			if json.Unmarshal(data, &meta) == nil {
+				meta["profile"] = dstProfile
+				meta["copied_from"] = srcProfile
+				meta["copied_at"] = time.Now().Format(time.RFC3339)
+				if updated, err := json.MarshalIndent(meta, "", "  "); err == nil {
+					// Atomic write for meta.json
+					tmpPath := metaPath + ".tmp"
+					if err := os.WriteFile(tmpPath, updated, 0600); err == nil {
+						os.Rename(tmpPath, metaPath)
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
 // ActiveProfile returns which profile is currently active (if any).
 // It compares the current auth files with vault backups using content hashing.
 func (v *Vault) ActiveProfile(fileSet AuthFileSet) (string, error) {

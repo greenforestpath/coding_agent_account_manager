@@ -3,6 +3,7 @@ package authfile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -1446,6 +1447,183 @@ func TestVaultRotateAutoBackups(t *testing.T) {
 			if _, err := os.Stat(profileDir); os.IsNotExist(err) {
 				t.Errorf("non-backup profile %s should still exist", name)
 			}
+		}
+	})
+}
+
+func TestVaultCopyProfile(t *testing.T) {
+	t.Run("successful copy", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		// Create source profile with files
+		srcDir := v.ProfilePath("testtool", "source")
+		if err := os.MkdirAll(srcDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		authContent := []byte(`{"token": "secret123"}`)
+		if err := os.WriteFile(filepath.Join(srcDir, "auth.json"), authContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		metaContent := []byte(`{"tool": "testtool", "profile": "source"}`)
+		if err := os.WriteFile(filepath.Join(srcDir, "meta.json"), metaContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Copy to destination
+		if err := v.CopyProfile("testtool", "source", "dest"); err != nil {
+			t.Fatalf("CopyProfile() error = %v", err)
+		}
+
+		// Verify destination exists with same content
+		destDir := v.ProfilePath("testtool", "dest")
+		if _, err := os.Stat(destDir); os.IsNotExist(err) {
+			t.Fatal("destination directory not created")
+		}
+
+		copiedAuth, err := os.ReadFile(filepath.Join(destDir, "auth.json"))
+		if err != nil {
+			t.Fatalf("reading dest auth: %v", err)
+		}
+		if string(copiedAuth) != string(authContent) {
+			t.Errorf("auth content = %q, want %q", copiedAuth, authContent)
+		}
+
+		// Verify source still exists
+		if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+			t.Error("source directory should still exist")
+		}
+	})
+
+	t.Run("source not found fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		err := v.CopyProfile("testtool", "nonexistent", "dest")
+		if err == nil {
+			t.Fatal("CopyProfile() should fail for nonexistent source")
+		}
+	})
+
+	t.Run("destination exists fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		// Create both source and destination
+		srcDir := v.ProfilePath("testtool", "source")
+		dstDir := v.ProfilePath("testtool", "dest")
+		if err := os.MkdirAll(srcDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dstDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		err := v.CopyProfile("testtool", "source", "dest")
+		if err == nil {
+			t.Fatal("CopyProfile() should fail when destination exists")
+		}
+	})
+
+	t.Run("invalid source profile name fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		err := v.CopyProfile("testtool", "../escape", "dest")
+		if err == nil {
+			t.Fatal("CopyProfile() should fail for invalid source profile name")
+		}
+	})
+
+	t.Run("invalid destination profile name fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		// Create source
+		srcDir := v.ProfilePath("testtool", "source")
+		if err := os.MkdirAll(srcDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		err := v.CopyProfile("testtool", "source", "../escape")
+		if err == nil {
+			t.Fatal("CopyProfile() should fail for invalid destination profile name")
+		}
+	})
+
+	t.Run("meta.json updated with new profile name", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		// Create source profile with meta.json
+		srcDir := v.ProfilePath("testtool", "auto-20260121-143022")
+		if err := os.MkdirAll(srcDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+
+		metaContent := []byte(`{"tool": "testtool", "profile": "auto-20260121-143022", "backed_up_at": "2026-01-21T14:30:22Z"}`)
+		if err := os.WriteFile(filepath.Join(srcDir, "meta.json"), metaContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcDir, "auth.json"), []byte(`{}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Copy to friendly name
+		if err := v.CopyProfile("testtool", "auto-20260121-143022", "work"); err != nil {
+			t.Fatalf("CopyProfile() error = %v", err)
+		}
+
+		// Read and verify meta.json
+		destDir := v.ProfilePath("testtool", "work")
+		metaPath := filepath.Join(destDir, "meta.json")
+		metaData, err := os.ReadFile(metaPath)
+		if err != nil {
+			t.Fatalf("reading meta.json: %v", err)
+		}
+
+		var meta map[string]interface{}
+		if err := json.Unmarshal(metaData, &meta); err != nil {
+			t.Fatalf("parsing meta.json: %v", err)
+		}
+
+		if meta["profile"] != "work" {
+			t.Errorf("meta.json profile = %v, want 'work'", meta["profile"])
+		}
+		if meta["copied_from"] != "auto-20260121-143022" {
+			t.Errorf("meta.json copied_from = %v, want 'auto-20260121-143022'", meta["copied_from"])
+		}
+		if meta["copied_at"] == nil {
+			t.Error("meta.json should have copied_at timestamp")
+		}
+	})
+
+	t.Run("copies system profile to regular name", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		v := NewVault(tmpDir)
+
+		// Create system profile
+		srcDir := v.ProfilePath("testtool", "_backup_20251217_143022")
+		if err := os.MkdirAll(srcDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(srcDir, "auth.json"), []byte(`{}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Copy to regular name
+		if err := v.CopyProfile("testtool", "_backup_20251217_143022", "restored"); err != nil {
+			t.Fatalf("CopyProfile() error = %v", err)
+		}
+
+		// Both should exist
+		if _, err := os.Stat(srcDir); os.IsNotExist(err) {
+			t.Error("source system profile should still exist")
+		}
+		if _, err := os.Stat(v.ProfilePath("testtool", "restored")); os.IsNotExist(err) {
+			t.Error("destination profile should exist")
 		}
 	})
 }

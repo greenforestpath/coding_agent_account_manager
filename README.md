@@ -222,6 +222,8 @@ carol@gmail.com
 | `caam delete <tool> <email>` | Remove a saved profile |
 | `caam paths [tool]` | Show auth file locations for each tool |
 | `caam clear <tool>` | Remove auth files (logout state) |
+| `caam alias <tool> <profile> <alias>` | Create a short alias for a profile |
+| `caam rename <tool> <old> <new>` | Copy profile to a new name (non-destructive) |
 | `caam uninstall` | Restore originals from `_original` and remove caam data/config |
 
 **Aliases:** `caam switch` and `caam use` work like `caam activate`
@@ -247,6 +249,14 @@ Aliases make long emails painless (works for `pick` and `activate`):
 caam alias claude work-account-1 work
 caam pick claude            # type "work" at the prompt
 caam activate claude work   # alias resolution works here too
+```
+
+Rename auto-generated profiles to friendly names (non-destructive copy):
+
+```bash
+caam rename claude auto-20260121-143022 work   # Copy profile to "work"
+caam rename claude old-name new-name           # Original preserved by default
+caam rename claude temp main --delete-old -y   # Delete old after copying
 ```
 
 SSH-safe fallback (no fzf, no TTY): use direct activation:
