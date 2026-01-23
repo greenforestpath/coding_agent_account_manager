@@ -119,11 +119,37 @@ type Coordinator struct {
 	stopCh     chan struct{}
 	doneCh     chan struct{}
 	running    bool
+	runID      string // Correlation ID for this coordinator run
 
 	// Callbacks
 	OnAuthRequest  func(req *AuthRequest)
 	OnAuthComplete func(paneID int, account string)
 	OnAuthFailed   func(paneID int, err error)
+}
+
+// RedactURL returns a redacted version of a URL for safe logging.
+// Only shows the base path, hiding query parameters that may contain sensitive data.
+func RedactURL(url string) string {
+	if url == "" {
+		return ""
+	}
+	// Find query string start
+	if idx := len(url); idx > 0 {
+		for i, c := range url {
+			if c == '?' {
+				return url[:i] + "?[REDACTED]"
+			}
+		}
+	}
+	return url
+}
+
+// RedactCode returns a redacted auth code for safe logging.
+func RedactCode(code string) string {
+	if len(code) <= 4 {
+		return "[REDACTED]"
+	}
+	return code[:2] + "..." + code[len(code)-2:]
 }
 
 // New creates a new coordinator.
@@ -132,21 +158,33 @@ func New(config Config) *Coordinator {
 		config.Logger = slog.Default()
 	}
 
+	// Generate a run ID for correlation across all logs from this coordinator instance
+	runID := uuid.New().String()[:8]
+
 	// Select pane client based on backend configuration, unless provided
 	paneClient := config.PaneClient
 	if paneClient == nil {
 		paneClient = selectPaneClient(config.Backend, config.Logger)
 	}
 
+	// Create logger with run_id for correlation
+	logger := config.Logger.With("run_id", runID)
+
 	return &Coordinator{
 		config:     config,
 		paneClient: paneClient,
-		logger:     config.Logger,
+		logger:     logger,
 		trackers:   make(map[int]*PaneTracker),
 		requests:   make(map[string]*AuthRequest),
 		stopCh:     make(chan struct{}),
 		doneCh:     make(chan struct{}),
+		runID:      runID,
 	}
+}
+
+// RunID returns the correlation ID for this coordinator run.
+func (c *Coordinator) RunID() string {
+	return c.runID
 }
 
 // selectPaneClient chooses the appropriate backend based on configuration.
@@ -353,31 +391,41 @@ func (c *Coordinator) handleIdleState(ctx context.Context, tracker *PaneTracker,
 	detected, metadata := DetectState(output)
 
 	if detected == StateRateLimited {
-		c.logger.Info("rate limit detected",
+		c.logger.Info("state transition",
 			"pane_id", tracker.PaneID,
+			"from_state", StateIdle.String(),
+			"to_state", StateRateLimited.String(),
+			"reason", "rate_limit_detected",
 			"reset_time", metadata["reset_time"],
-			"action", "rate_limit_detected")
+			"action", "transition")
 		tracker.SetState(StateRateLimited)
 
 		// Check login cooldown before injecting
 		if tracker.IsOnCooldown("login") {
-			c.logger.Debug("login on cooldown, skipping injection",
+			c.logger.Debug("action blocked by cooldown",
 				"pane_id", tracker.PaneID,
-				"remaining", tracker.CooldownRemaining("login"),
+				"state", StateRateLimited.String(),
+				"blocked_action", "login_inject",
+				"cooldown_remaining", tracker.CooldownRemaining("login"),
 				"action", "cooldown_skip")
 			return
 		}
 
 		// Auto-inject /login command
 		if err := c.paneClient.SendText(ctx, tracker.PaneID, "/login\n", true); err != nil {
-			c.logger.Error("failed to inject /login",
+			c.logger.Error("injection failed",
 				"pane_id", tracker.PaneID,
+				"state", StateRateLimited.String(),
+				"inject_type", "login_command",
 				"error", err,
-				"action", "login_inject_failed")
+				"action", "inject_failed")
 		} else {
-			c.logger.Debug("injected /login command",
+			c.logger.Debug("injection succeeded",
 				"pane_id", tracker.PaneID,
-				"action", "login_injected")
+				"state", StateRateLimited.String(),
+				"inject_type", "login_command",
+				"cooldown_set", c.config.LoginCooldown,
+				"action", "inject_success")
 			tracker.SetCooldown("login", c.config.LoginCooldown)
 		}
 	}
@@ -388,16 +436,21 @@ func (c *Coordinator) handleRateLimitedState(ctx context.Context, tracker *PaneT
 
 	switch detected {
 	case StateAwaitingMethodSelect:
-		c.logger.Debug("method selection prompt detected",
+		c.logger.Debug("state transition",
 			"pane_id", tracker.PaneID,
-			"action", "method_select_detected")
+			"from_state", StateRateLimited.String(),
+			"to_state", StateAwaitingMethodSelect.String(),
+			"reason", "method_select_prompt_detected",
+			"action", "transition")
 		tracker.SetState(StateAwaitingMethodSelect)
 
 		// Check method select cooldown before injecting
 		if tracker.IsOnCooldown("method_select") {
-			c.logger.Debug("method select on cooldown, skipping injection",
+			c.logger.Debug("action blocked by cooldown",
 				"pane_id", tracker.PaneID,
-				"remaining", tracker.CooldownRemaining("method_select"),
+				"state", StateAwaitingMethodSelect.String(),
+				"blocked_action", "method_select_inject",
+				"cooldown_remaining", tracker.CooldownRemaining("method_select"),
 				"action", "cooldown_skip")
 			return
 		}
@@ -405,14 +458,19 @@ func (c *Coordinator) handleRateLimitedState(ctx context.Context, tracker *PaneT
 		// Auto-select option 1 (Claude account with subscription)
 		time.Sleep(200 * time.Millisecond)
 		if err := c.paneClient.SendText(ctx, tracker.PaneID, "1\n", true); err != nil {
-			c.logger.Error("failed to inject option selection",
+			c.logger.Error("injection failed",
 				"pane_id", tracker.PaneID,
+				"state", StateAwaitingMethodSelect.String(),
+				"inject_type", "subscription_select",
 				"error", err,
-				"action", "method_select_failed")
+				"action", "inject_failed")
 		} else {
-			c.logger.Debug("injected option selection",
+			c.logger.Debug("injection succeeded",
 				"pane_id", tracker.PaneID,
-				"action", "method_select_injected")
+				"state", StateAwaitingMethodSelect.String(),
+				"inject_type", "subscription_select",
+				"cooldown_set", c.config.MethodSelectCooldown,
+				"action", "inject_success")
 			tracker.SetCooldown("method_select", c.config.MethodSelectCooldown)
 		}
 
@@ -422,17 +480,23 @@ func (c *Coordinator) handleRateLimitedState(ctx context.Context, tracker *PaneT
 		if url != "" {
 			tracker.SetOAuthURL(url)
 			tracker.SetState(StateAwaitingURL)
-			c.logger.Info("OAuth URL detected (skip method select)",
+			c.logger.Info("state transition",
 				"pane_id", tracker.PaneID,
-				"action", "url_detected")
+				"from_state", StateRateLimited.String(),
+				"to_state", StateAwaitingURL.String(),
+				"reason", "oauth_url_detected_skip_method",
+				"url_redacted", RedactURL(url),
+				"action", "transition")
 		}
 	}
 
 	// Check timeout
 	if tracker.TimeSinceStateChange() > c.config.StateTimeout {
-		c.logger.Warn("rate limited state timeout, resetting",
+		c.logger.Warn("state timeout",
 			"pane_id", tracker.PaneID,
-			"action", "state_timeout")
+			"state", StateRateLimited.String(),
+			"timeout_duration", c.config.StateTimeout,
+			"action", "timeout_reset")
 		tracker.Reset()
 	}
 }
@@ -448,14 +512,23 @@ func (c *Coordinator) handleAwaitingMethodSelectState(ctx context.Context, track
 		if url != "" {
 			tracker.SetOAuthURL(url)
 			tracker.SetState(StateAwaitingURL)
-			c.logger.Info("OAuth URL detected", "pane_id", tracker.PaneID)
+			c.logger.Info("state transition",
+				"pane_id", tracker.PaneID,
+				"from_state", StateAwaitingMethodSelect.String(),
+				"to_state", StateAwaitingURL.String(),
+				"reason", "oauth_url_detected",
+				"url_redacted", RedactURL(url),
+				"action", "transition")
 		}
 	}
 
 	// Check timeout
 	if tracker.TimeSinceStateChange() > c.config.StateTimeout {
-		c.logger.Warn("awaiting method select timeout, resetting",
-			"pane_id", tracker.PaneID)
+		c.logger.Warn("state timeout",
+			"pane_id", tracker.PaneID,
+			"state", StateAwaitingMethodSelect.String(),
+			"timeout_duration", c.config.StateTimeout,
+			"action", "timeout_reset")
 		tracker.Reset()
 	}
 }
@@ -488,10 +561,13 @@ func (c *Coordinator) handleAwaitingURLState(ctx context.Context, tracker *PaneT
 		tracker.SetRequestID(req.ID)
 		tracker.SetState(StateAuthPending)
 
-		c.logger.Info("created auth request",
+		c.logger.Info("auth request created",
 			"pane_id", tracker.PaneID,
 			"request_id", req.ID,
-			"url", oauthURL)
+			"from_state", StateAwaitingURL.String(),
+			"to_state", StateAuthPending.String(),
+			"url_redacted", RedactURL(oauthURL),
+			"action", "auth_request_created")
 
 		if c.OnAuthRequest != nil {
 			c.OnAuthRequest(req)
@@ -500,8 +576,11 @@ func (c *Coordinator) handleAwaitingURLState(ctx context.Context, tracker *PaneT
 
 	// Check timeout
 	if tracker.TimeSinceStateChange() > c.config.StateTimeout {
-		c.logger.Warn("awaiting URL timeout, resetting",
-			"pane_id", tracker.PaneID)
+		c.logger.Warn("state timeout",
+			"pane_id", tracker.PaneID,
+			"state", StateAwaitingURL.String(),
+			"timeout_duration", c.config.StateTimeout,
+			"action", "timeout_reset")
 		tracker.Reset()
 	}
 }
@@ -509,16 +588,26 @@ func (c *Coordinator) handleAwaitingURLState(ctx context.Context, tracker *PaneT
 func (c *Coordinator) handleAuthPendingState(ctx context.Context, tracker *PaneTracker, output string) {
 	// Check if we received a code
 	if tracker.GetReceivedCode() != "" {
+		c.logger.Debug("state transition",
+			"pane_id", tracker.PaneID,
+			"from_state", StateAuthPending.String(),
+			"to_state", StateCodeReceived.String(),
+			"reason", "auth_code_received",
+			"request_id", tracker.GetRequestID(),
+			"action", "transition")
 		tracker.SetState(StateCodeReceived)
 		return
 	}
 
 	// Check auth timeout
 	if tracker.TimeSinceStateChange() > c.config.AuthTimeout {
-		c.logger.Warn("auth pending timeout",
+		c.logger.Warn("auth timeout",
 			"pane_id", tracker.PaneID,
-			"request_id", tracker.GetRequestID())
-		
+			"state", StateAuthPending.String(),
+			"request_id", tracker.GetRequestID(),
+			"timeout_duration", c.config.AuthTimeout,
+			"action", "auth_timeout")
+
 		c.cleanupRequest(tracker.GetRequestID())
 		tracker.SetErrorMessage("auth timeout")
 		tracker.SetState(StateFailed)
@@ -532,25 +621,42 @@ func (c *Coordinator) handleAuthPendingState(ctx context.Context, tracker *PaneT
 func (c *Coordinator) handleCodeReceivedState(ctx context.Context, tracker *PaneTracker, output string) {
 	code := tracker.GetReceivedCode()
 	if code == "" {
-		c.logger.Error("code received state but no code", "pane_id", tracker.PaneID)
+		c.logger.Error("invalid state",
+			"pane_id", tracker.PaneID,
+			"state", StateCodeReceived.String(),
+			"reason", "code_missing",
+			"action", "transition_to_failed")
 		tracker.SetState(StateFailed)
 		return
 	}
 
 	// Inject the code
-	c.logger.Info("injecting auth code",
+	c.logger.Info("code injection starting",
 		"pane_id", tracker.PaneID,
-		"account", tracker.GetUsedAccount())
+		"state", StateCodeReceived.String(),
+		"account", tracker.GetUsedAccount(),
+		"code_redacted", RedactCode(code),
+		"request_id", tracker.GetRequestID(),
+		"action", "inject_code")
 
 	if err := c.paneClient.SendText(ctx, tracker.PaneID, code+"\n", true); err != nil {
-		c.logger.Error("failed to inject code",
+		c.logger.Error("injection failed",
 			"pane_id", tracker.PaneID,
-			"error", err)
+			"state", StateCodeReceived.String(),
+			"inject_type", "auth_code",
+			"error", err,
+			"action", "inject_failed")
 		tracker.SetErrorMessage(err.Error())
 		tracker.SetState(StateFailed)
 		return
 	}
 
+	c.logger.Debug("state transition",
+		"pane_id", tracker.PaneID,
+		"from_state", StateCodeReceived.String(),
+		"to_state", StateAwaitingConfirm.String(),
+		"reason", "code_injected",
+		"action", "transition")
 	tracker.SetState(StateAwaitingConfirm)
 }
 
@@ -559,14 +665,22 @@ func (c *Coordinator) handleAwaitingConfirmState(ctx context.Context, tracker *P
 
 	switch detected {
 	case StateResuming:
-		c.logger.Info("login confirmed",
+		c.logger.Info("state transition",
 			"pane_id", tracker.PaneID,
-			"account", tracker.GetUsedAccount())
+			"from_state", StateAwaitingConfirm.String(),
+			"to_state", StateResuming.String(),
+			"reason", "login_success_detected",
+			"account", tracker.GetUsedAccount(),
+			"request_id", tracker.GetRequestID(),
+			"action", "transition")
 		tracker.SetState(StateResuming)
 
 	case StateFailed:
-		c.logger.Error("login failed",
-			"pane_id", tracker.PaneID)
+		c.logger.Error("login verification failed",
+			"pane_id", tracker.PaneID,
+			"state", StateAwaitingConfirm.String(),
+			"request_id", tracker.GetRequestID(),
+			"action", "transition_to_failed")
 		tracker.SetState(StateFailed)
 
 		if c.OnAuthFailed != nil {
@@ -576,9 +690,13 @@ func (c *Coordinator) handleAwaitingConfirmState(ctx context.Context, tracker *P
 
 	// Check timeout
 	if tracker.TimeSinceStateChange() > c.config.StateTimeout {
-		c.logger.Warn("awaiting confirm timeout",
-			"pane_id", tracker.PaneID)
-		
+		c.logger.Warn("state timeout",
+			"pane_id", tracker.PaneID,
+			"state", StateAwaitingConfirm.String(),
+			"request_id", tracker.GetRequestID(),
+			"timeout_duration", c.config.StateTimeout,
+			"action", "timeout_failed")
+
 		c.cleanupRequest(tracker.GetRequestID())
 		tracker.SetErrorMessage("confirmation timeout")
 		tracker.SetState(StateFailed)
@@ -588,33 +706,42 @@ func (c *Coordinator) handleAwaitingConfirmState(ctx context.Context, tracker *P
 func (c *Coordinator) handleResumingState(ctx context.Context, tracker *PaneTracker, output string) {
 	// Check resume cooldown to prevent duplicate injections
 	if tracker.IsOnCooldown("resume") {
-		c.logger.Debug("resume prompt on cooldown, skipping injection",
+		c.logger.Debug("action blocked by cooldown",
 			"pane_id", tracker.PaneID,
-			"remaining", tracker.CooldownRemaining("resume"),
+			"state", StateResuming.String(),
+			"blocked_action", "resume_prompt_inject",
+			"cooldown_remaining", tracker.CooldownRemaining("resume"),
 			"action", "cooldown_skip")
 		return
 	}
 
 	// Inject resume prompt
-	c.logger.Info("injecting resume prompt",
+	c.logger.Info("resume prompt injection starting",
 		"pane_id", tracker.PaneID,
-		"action", "resume_inject")
+		"state", StateResuming.String(),
+		"request_id", tracker.GetRequestID(),
+		"account", tracker.GetUsedAccount(),
+		"action", "inject_resume")
 
 	time.Sleep(500 * time.Millisecond)
 	if err := c.paneClient.SendText(ctx, tracker.PaneID, c.config.ResumePrompt, true); err != nil {
-		c.logger.Error("failed to inject resume prompt",
+		c.logger.Error("injection failed",
 			"pane_id", tracker.PaneID,
+			"state", StateResuming.String(),
+			"inject_type", "resume_prompt",
 			"error", err,
-			"action", "resume_inject_failed")
+			"action", "inject_failed")
 		return
 	}
 
 	// Set cooldown to prevent duplicate injections
 	tracker.SetCooldown("resume", c.config.ResumeCooldown)
-	c.logger.Debug("resume prompt injected successfully",
+	c.logger.Debug("injection succeeded",
 		"pane_id", tracker.PaneID,
-		"cooldown", c.config.ResumeCooldown,
-		"action", "resume_injected")
+		"state", StateResuming.String(),
+		"inject_type", "resume_prompt",
+		"cooldown_set", c.config.ResumeCooldown,
+		"action", "inject_success")
 
 	// Mark request complete and clean up
 	requestID := tracker.GetRequestID()
@@ -624,6 +751,14 @@ func (c *Coordinator) handleResumingState(ctx context.Context, tracker *PaneTrac
 		delete(c.requests, requestID)
 	}
 	c.mu.Unlock()
+
+	c.logger.Info("auth cycle complete",
+		"pane_id", tracker.PaneID,
+		"from_state", StateResuming.String(),
+		"to_state", StateIdle.String(),
+		"request_id", requestID,
+		"account", tracker.GetUsedAccount(),
+		"action", "auth_complete")
 
 	if c.OnAuthComplete != nil {
 		c.OnAuthComplete(tracker.PaneID, tracker.GetUsedAccount())
@@ -639,6 +774,10 @@ func (c *Coordinator) ReceiveAuthResponse(resp AuthResponse) error {
 	req, ok := c.requests[resp.RequestID]
 	if !ok {
 		c.mu.Unlock()
+		c.logger.Warn("unknown auth response",
+			"request_id", resp.RequestID,
+			"reason", "request_not_found",
+			"action", "response_rejected")
 		return fmt.Errorf("unknown request: %s", resp.RequestID)
 	}
 	req.Status = "processing"
@@ -656,13 +795,20 @@ func (c *Coordinator) ReceiveAuthResponse(resp AuthResponse) error {
 	c.mu.RUnlock()
 
 	if tracker == nil {
+		c.logger.Warn("orphaned auth response",
+			"request_id", resp.RequestID,
+			"reason", "tracker_not_found",
+			"action", "response_rejected")
 		return fmt.Errorf("no tracker for request: %s", resp.RequestID)
 	}
 
 	if resp.Error != "" {
-		c.logger.Error("auth response error",
+		c.logger.Error("auth response error received",
+			"pane_id", tracker.PaneID,
 			"request_id", resp.RequestID,
-			"error", resp.Error)
+			"state", tracker.GetState().String(),
+			"error", resp.Error,
+			"action", "transition_to_failed")
 		tracker.SetErrorMessage(resp.Error)
 		tracker.SetState(StateFailed)
 
@@ -680,10 +826,13 @@ func (c *Coordinator) ReceiveAuthResponse(resp AuthResponse) error {
 	tracker.SetAuthResponse(resp.Code, resp.Account)
 	// State will transition on next poll
 
-	c.logger.Info("received auth code",
+	c.logger.Info("auth code received from agent",
+		"pane_id", tracker.PaneID,
 		"request_id", resp.RequestID,
+		"state", tracker.GetState().String(),
 		"account", resp.Account,
-		"pane_id", tracker.PaneID)
+		"code_redacted", RedactCode(resp.Code),
+		"action", "code_stored")
 
 	return nil
 }
