@@ -140,7 +140,7 @@ func (c *unixController) ReadOutput() (string, error) {
 			return "", nil // No data available within timeout
 		}
 		if err == io.EOF {
-			return "", nil // Process exited
+			return "", io.EOF // Process exited, signal caller to stop reading
 		}
 		// Check for path error which wraps the syscall error
 		if pathErr, ok := err.(*os.PathError); ok && pathErr.Timeout() {

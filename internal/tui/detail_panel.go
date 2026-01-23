@@ -39,20 +39,23 @@ type DetailPanel struct {
 
 // DetailPanelStyles holds the styles for the detail panel.
 type DetailPanelStyles struct {
-	Border       lipgloss.Style
-	Title        lipgloss.Style
-	Label        lipgloss.Style
-	Value        lipgloss.Style
-	StatusOK     lipgloss.Style
-	StatusWarn   lipgloss.Style
-	StatusBad    lipgloss.Style
-	StatusMuted  lipgloss.Style
-	LockIcon     lipgloss.Style
-	Divider      lipgloss.Style
-	ActionHeader lipgloss.Style
-	ActionKey    lipgloss.Style
-	ActionDesc   lipgloss.Style
-	Empty        lipgloss.Style
+	Border        lipgloss.Style
+	Title         lipgloss.Style
+	Label         lipgloss.Style
+	Value         lipgloss.Style
+	ValueNumeric  lipgloss.Style // Right-aligned numeric values
+	StatusOK      lipgloss.Style
+	StatusWarn    lipgloss.Style
+	StatusBad     lipgloss.Style
+	StatusMuted   lipgloss.Style
+	LockIcon      lipgloss.Style
+	Divider       lipgloss.Style
+	ActionHeader  lipgloss.Style
+	ActionKey     lipgloss.Style
+	ActionDesc    lipgloss.Style
+	Empty         lipgloss.Style
+	SectionHeader lipgloss.Style // Header for grouped sections
+	SectionDivider lipgloss.Style // Subtle divider between sections
 }
 
 // DefaultDetailPanelStyles returns the default styles for the detail panel.
@@ -83,6 +86,10 @@ func NewDetailPanelStyles(theme Theme) DetailPanelStyles {
 
 		Value: lipgloss.NewStyle().
 			Foreground(p.Text),
+
+		ValueNumeric: lipgloss.NewStyle().
+			Foreground(p.Text).
+			Align(lipgloss.Right),
 
 		StatusOK: lipgloss.NewStyle().
 			Foreground(p.Success).
@@ -118,6 +125,15 @@ func NewDetailPanelStyles(theme Theme) DetailPanelStyles {
 			Foreground(p.Muted).
 			Italic(true).
 			Padding(2, 2),
+
+		SectionHeader: lipgloss.NewStyle().
+			Bold(true).
+			Foreground(p.Accent).
+			MarginTop(1),
+
+		SectionDivider: lipgloss.NewStyle().
+			Foreground(p.BorderMuted).
+			MarginTop(1),
 	}
 }
 
@@ -144,7 +160,7 @@ func (p *DetailPanel) SetSize(width, height int) {
 	p.height = height
 }
 
-// View renders the detail panel.
+// View renders the detail panel with grouped sections.
 func (p *DetailPanel) View() string {
 	if p.profile == nil {
 		empty := p.styles.Empty.Render("Select a profile to view details")
@@ -155,22 +171,39 @@ func (p *DetailPanel) View() string {
 	}
 
 	prof := p.profile
+	dividerWidth := p.width - 6
+	if dividerWidth < 20 {
+		dividerWidth = 20
+	}
+	thinDivider := p.styles.SectionDivider.Render(strings.Repeat("─", dividerWidth))
 
 	// Title
 	title := p.styles.Title.Render(fmt.Sprintf("Profile: %s", prof.Name))
 
-	// Detail rows
-	var rows []string
+	var sections []string
 
-	// Provider
-	rows = append(rows, p.renderRow("Provider", capitalizeFirst(prof.Provider)))
+	// ═══ PROFILE SECTION ═══
+	profileHeader := p.styles.SectionHeader.Render("Profile")
+	var profileRows []string
+	profileRows = append(profileRows, p.renderRow("Provider", capitalizeFirst(prof.Provider)))
+	if prof.Account != "" {
+		profileRows = append(profileRows, p.renderRow("Account", prof.Account))
+	}
+	if prof.Description != "" {
+		profileRows = append(profileRows, p.renderRow("Notes", prof.Description))
+	}
+	sections = append(sections, lipgloss.JoinVertical(lipgloss.Left,
+		profileHeader,
+		lipgloss.JoinVertical(lipgloss.Left, profileRows...),
+	))
 
-	// Auth mode
-	rows = append(rows, p.renderRow("Auth", prof.AuthMode))
+	// ═══ AUTH SECTION ═══
+	authHeader := p.styles.SectionHeader.Render("Auth")
+	var authRows []string
+	authRows = append(authRows, p.renderRow("Mode", prof.AuthMode))
 
 	// Status with icon and text
 	statusText := prof.HealthStatus.Icon() + " " + prof.HealthStatus.String()
-	// Apply color based on status
 	var statusStyle lipgloss.Style
 	switch prof.HealthStatus {
 	case health.StatusHealthy:
@@ -182,7 +215,7 @@ func (p *DetailPanel) View() string {
 	default:
 		statusStyle = p.styles.StatusMuted
 	}
-	rows = append(rows, p.renderRow("Status", statusStyle.Render(statusText)))
+	authRows = append(authRows, p.renderRow("Status", statusStyle.Render(statusText)))
 
 	// Token Expiry
 	if !prof.TokenExpiry.IsZero() {
@@ -193,10 +226,25 @@ func (p *DetailPanel) View() string {
 		} else {
 			expiryStr = fmt.Sprintf("Expires in %s", formatDurationFull(ttl))
 		}
-		rows = append(rows, p.renderRow("Token", expiryStr))
+		authRows = append(authRows, p.renderRow("Token", expiryStr))
 	}
 
-	// Errors (if any)
+	// Lock status
+	if prof.Locked {
+		authRows = append(authRows, p.renderRow("Lock", p.styles.LockIcon.Render("🔒 Locked")))
+	}
+
+	sections = append(sections, lipgloss.JoinVertical(lipgloss.Left,
+		thinDivider,
+		authHeader,
+		lipgloss.JoinVertical(lipgloss.Left, authRows...),
+	))
+
+	// ═══ USAGE SECTION ═══
+	usageHeader := p.styles.SectionHeader.Render("Usage")
+	var usageRows []string
+
+	// Errors (numeric, right-aligned conceptually but we show context)
 	if prof.ErrorCount > 0 {
 		errorStr := fmt.Sprintf("%d in last hour", prof.ErrorCount)
 		if prof.ErrorCount >= 3 {
@@ -204,21 +252,37 @@ func (p *DetailPanel) View() string {
 		} else {
 			errorStr = p.styles.StatusWarn.Render(errorStr)
 		}
-		rows = append(rows, p.renderRow("Errors", errorStr))
+		usageRows = append(usageRows, p.renderRow("Errors", errorStr))
 	} else {
-		rows = append(rows, p.renderRow("Errors", p.styles.StatusOK.Render("None")))
+		usageRows = append(usageRows, p.renderRow("Errors", p.styles.StatusOK.Render("None")))
 	}
 
-	// Penalty (if any)
+	// Penalty (numeric value)
 	if prof.Penalty > 0 {
 		penaltyStr := fmt.Sprintf("%.2f", prof.Penalty)
-		rows = append(rows, p.renderRow("Penalty", penaltyStr))
+		usageRows = append(usageRows, p.renderRow("Penalty", penaltyStr))
 	}
 
-	// Lock status
-	if prof.Locked {
-		rows = append(rows, p.renderRow("Lock", p.styles.LockIcon.Render("🔒 Locked")))
+	// Last used
+	if !prof.LastUsedAt.IsZero() {
+		usageRows = append(usageRows, p.renderRow("Last used", formatRelativeTime(prof.LastUsedAt)))
+	} else {
+		usageRows = append(usageRows, p.renderRow("Last used", "never"))
 	}
+
+	// Created
+	if !prof.CreatedAt.IsZero() {
+		usageRows = append(usageRows, p.renderRow("Created", prof.CreatedAt.Format("2006-01-02")))
+	}
+
+	sections = append(sections, lipgloss.JoinVertical(lipgloss.Left,
+		thinDivider,
+		usageHeader,
+		lipgloss.JoinVertical(lipgloss.Left, usageRows...),
+	))
+
+	// ═══ PATHS SECTION ═══
+	var pathRows []string
 
 	// Path (truncate if too long)
 	pathDisplay := prof.Path
@@ -227,29 +291,7 @@ func (p *DetailPanel) View() string {
 		pathDisplay = "~" + pathDisplay[len(pathDisplay)-maxPathLen+1:]
 	}
 	if pathDisplay != "" {
-		rows = append(rows, p.renderRow("Path", pathDisplay))
-	}
-
-	// Created
-	if !prof.CreatedAt.IsZero() {
-		rows = append(rows, p.renderRow("Created", prof.CreatedAt.Format("2006-01-02")))
-	}
-
-	// Last used
-	if !prof.LastUsedAt.IsZero() {
-		rows = append(rows, p.renderRow("Last used", formatRelativeTime(prof.LastUsedAt)))
-	} else {
-		rows = append(rows, p.renderRow("Last used", "never"))
-	}
-
-	// Account
-	if prof.Account != "" {
-		rows = append(rows, p.renderRow("Account", prof.Account))
-	}
-
-	// Description
-	if prof.Description != "" {
-		rows = append(rows, p.renderRow("Notes", prof.Description))
+		pathRows = append(pathRows, p.renderRow("Path", pathDisplay))
 	}
 
 	// Browser config
@@ -262,20 +304,22 @@ func (p *DetailPanel) View() string {
 				browserStr = prof.BrowserProf
 			}
 		}
-		rows = append(rows, p.renderRow("Browser", browserStr))
+		pathRows = append(pathRows, p.renderRow("Browser", browserStr))
 	}
 
-	// Divider
-	dividerWidth := p.width - 6
-	if dividerWidth < 20 {
-		dividerWidth = 20
+	if len(pathRows) > 0 {
+		pathsHeader := p.styles.SectionHeader.Render("Paths")
+		sections = append(sections, lipgloss.JoinVertical(lipgloss.Left,
+			thinDivider,
+			pathsHeader,
+			lipgloss.JoinVertical(lipgloss.Left, pathRows...),
+		))
 	}
+
+	// ═══ ACTIONS SECTION ═══
 	divider := p.styles.Divider.Render(strings.Repeat("─", dividerWidth))
-
-	// Actions header
 	actionsHeader := p.styles.ActionHeader.Render("Actions")
 
-	// Action rows
 	actions := []struct {
 		key  string
 		desc string
@@ -294,20 +338,14 @@ func (p *DetailPanel) View() string {
 		desc := p.styles.ActionDesc.Render(action.desc)
 		actionRows = append(actionRows, fmt.Sprintf("%s %s", key, desc))
 	}
-
-	// Combine all sections
-	detailContent := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	actionsContent := lipgloss.JoinVertical(lipgloss.Left, actionRows...)
 
-	inner := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		detailContent,
-		"",
-		divider,
-		actionsHeader,
-		actionsContent,
-	)
+	// Combine all sections
+	allSections := []string{title}
+	allSections = append(allSections, sections...)
+	allSections = append(allSections, "", divider, actionsHeader, actionsContent)
+
+	inner := lipgloss.JoinVertical(lipgloss.Left, allSections...)
 
 	// Apply border
 	if p.width > 0 {

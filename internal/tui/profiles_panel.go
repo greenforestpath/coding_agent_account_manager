@@ -45,6 +45,7 @@ type ProfilesPanelStyles struct {
 	Title           lipgloss.Style
 	Header          lipgloss.Style
 	Row             lipgloss.Style
+	RowAlt          lipgloss.Style // Zebra stripe - alternate row background
 	SelectedRow     lipgloss.Style
 	ActiveIndicator lipgloss.Style
 	StatusOK        lipgloss.Style
@@ -54,6 +55,15 @@ type ProfilesPanelStyles struct {
 	LockIcon        lipgloss.Style
 	ProjectBadge    lipgloss.Style
 	Empty           lipgloss.Style
+	// Row anatomy styles
+	RowIcon         lipgloss.Style // Left icon area
+	RowLabel        lipgloss.Style // Primary label (profile name)
+	RowMetadata     lipgloss.Style // Secondary metadata (auth mode, last used)
+	StatusBadge     lipgloss.Style // Status chip with padding
+	StatusBadgeOK   lipgloss.Style
+	StatusBadgeWarn lipgloss.Style
+	StatusBadgeBad  lipgloss.Style
+	RowSeparator    lipgloss.Style // Subtle separator between rows
 }
 
 // DefaultProfilesPanelStyles returns the default styles for the profiles panel.
@@ -87,6 +97,10 @@ func NewProfilesPanelStyles(theme Theme) ProfilesPanelStyles {
 		Row: lipgloss.NewStyle().
 			Foreground(p.Text),
 
+		RowAlt: lipgloss.NewStyle().
+			Foreground(p.Text).
+			Background(p.SurfaceMuted),
+
 		SelectedRow: lipgloss.NewStyle().
 			Foreground(p.Text).
 			Bold(true).
@@ -119,6 +133,42 @@ func NewProfilesPanelStyles(theme Theme) ProfilesPanelStyles {
 			Foreground(p.Muted).
 			Italic(true).
 			Padding(2, 2),
+
+		// Row anatomy styles
+		RowIcon: lipgloss.NewStyle().
+			Width(2),
+
+		RowLabel: lipgloss.NewStyle().
+			Foreground(p.Text).
+			Bold(true),
+
+		RowMetadata: lipgloss.NewStyle().
+			Foreground(p.Muted),
+
+		// Status badge styles with consistent padding and rounded appearance
+		StatusBadge: lipgloss.NewStyle().
+			Padding(0, 1),
+
+		StatusBadgeOK: lipgloss.NewStyle().
+			Foreground(p.Success).
+			Background(p.Surface).
+			Padding(0, 1).
+			Bold(true),
+
+		StatusBadgeWarn: lipgloss.NewStyle().
+			Foreground(p.Warning).
+			Background(p.Surface).
+			Padding(0, 1).
+			Bold(true),
+
+		StatusBadgeBad: lipgloss.NewStyle().
+			Foreground(p.Danger).
+			Background(p.Surface).
+			Padding(0, 1).
+			Bold(true),
+
+		RowSeparator: lipgloss.NewStyle().
+			Foreground(p.BorderMuted),
 	}
 }
 
@@ -134,6 +184,42 @@ func (s ProfilesPanelStyles) StatusStyle(status health.HealthStatus) lipgloss.St
 	default:
 		return s.StatusMuted
 	}
+}
+
+// statusBadgeStyle returns the badge style for a given health status.
+func (p *ProfilesPanel) statusBadgeStyle(status health.HealthStatus) lipgloss.Style {
+	switch status {
+	case health.StatusHealthy:
+		return p.styles.StatusBadgeOK
+	case health.StatusWarning:
+		return p.styles.StatusBadgeWarn
+	case health.StatusCritical:
+		return p.styles.StatusBadgeBad
+	default:
+		return p.styles.StatusBadge.Foreground(p.styles.StatusMuted.GetForeground())
+	}
+}
+
+// truncateWithEllipsis truncates a string and adds ellipsis if needed.
+func truncateWithEllipsis(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 3 {
+		return s[:maxWidth]
+	}
+	// Use runes to properly handle Unicode
+	runes := []rune(s)
+	for i := len(runes) - 1; i >= 0; i-- {
+		candidate := string(runes[:i]) + "..."
+		if lipgloss.Width(candidate) <= maxWidth {
+			return candidate
+		}
+	}
+	return "..."
 }
 
 // formatTUIStatus formats the health status string.
@@ -364,51 +450,50 @@ func (p *ProfilesPanel) View() string {
 	}
 	header := p.styles.Header.Render(strings.Join(headerCells, " "))
 
-	// Profile rows
+	// Profile rows with zebra striping
 	var rows []string
 	for i, prof := range p.profiles {
-		// Indicator for selected and active
+		// Left icon indicator for active profile
 		indicator := "  "
 		if prof.IsActive {
 			indicator = p.styles.ActiveIndicator.Render("● ")
 		}
 
-		// Status display
+		// Status badge with icon and consistent styling
 		statusText := formatTUIStatus(&prof)
+		statusBadgeStyle := p.statusBadgeStyle(prof.HealthStatus)
 		if prof.Locked && layout == "full" {
 			statusText += " " + p.styles.LockIcon.Render("🔒")
 		}
-		statusStyle := p.styles.StatusStyle(prof.HealthStatus)
 
-		// Last used - relative time
+		// Last used - relative time (right-aligned in display)
 		lastUsed := formatRelativeTime(prof.LastUsed)
 
-		// Account (truncate if needed)
+		// Account (truncate with ellipsis if needed)
 		account := prof.Account
 		if account == "" {
 			account = "-"
 		}
-		if len(account) > colWidths.account && colWidths.account > 3 {
-			account = account[:colWidths.account-3] + "..."
-		} else if len(account) > colWidths.account {
-			account = account[:colWidths.account]
-		}
+		account = truncateWithEllipsis(account, colWidths.account)
 
 		// Build row cells with proper padding
+		// Row anatomy: [Icon] [Label] [Metadata...] [Status Badge]
 		paddedName := padRight(formatNameWithBadge(prof.Name, prof.Badge, colWidths.name-2), colWidths.name-2)
 		paddedStatusText := padRight(statusText, colWidths.status)
-		renderedStatus := statusStyle.Render(paddedStatusText)
+		renderedStatus := statusBadgeStyle.Render(paddedStatusText)
 
 		rowParts := []string{indicator + paddedName}
 		if layout == "full" {
-			rowParts = append(rowParts, padRight(prof.AuthMode, colWidths.auth))
+			// Auth mode as secondary metadata
+			rowParts = append(rowParts, p.styles.RowMetadata.Render(padRight(prof.AuthMode, colWidths.auth)))
 		}
 		rowParts = append(rowParts, renderedStatus)
 		if layout != "narrow" {
-			rowParts = append(rowParts, padRight(lastUsed, colWidths.lastUsed))
+			// Right-aligned time value
+			rowParts = append(rowParts, p.styles.RowMetadata.Render(padRight(lastUsed, colWidths.lastUsed)))
 		}
 		if layout == "full" {
-			rowParts = append(rowParts, padRight(account, colWidths.account))
+			rowParts = append(rowParts, p.styles.RowMetadata.Render(padRight(account, colWidths.account)))
 		}
 
 		rowStr := strings.Join(rowParts, " ")
@@ -416,10 +501,15 @@ func (p *ProfilesPanel) View() string {
 			rowStr += " " + p.styles.ProjectBadge.Render("[PROJECT DEFAULT]")
 		}
 
-		// Apply row style
-		style := p.styles.Row
+		// Apply row style with zebra striping
+		var style lipgloss.Style
 		if i == p.selected {
 			style = p.styles.SelectedRow
+		} else if i%2 == 1 {
+			// Alternate rows get subtle background
+			style = p.styles.RowAlt
+		} else {
+			style = p.styles.Row
 		}
 		rows = append(rows, style.Render(rowStr))
 	}

@@ -470,10 +470,14 @@ func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller, do
 	})
 	defer writer.Flush()
 
+	// draining indicates context was cancelled and we're draining remaining PTY output
+	draining := false
+
 	for {
 		// Poll for output (ReadOutput is non-blocking with timeout)
 		output, err := ctrl.ReadOutput()
 		if err != nil {
+			// EOF or error - PTY closed, stop reading
 			break
 		}
 
@@ -513,12 +517,17 @@ func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller, do
 			}
 		}
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(10 * time.Millisecond):
-			// Yield
+		// Check context cancellation
+		if !draining {
+			select {
+			case <-ctx.Done():
+				// Context cancelled, but continue draining PTY buffer until EOF
+				draining = true
+			case <-time.After(10 * time.Millisecond):
+				// Yield
+			}
 		}
+		// In drain mode, continue looping without delay until ReadOutput returns EOF
 	}
 }
 
