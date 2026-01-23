@@ -187,6 +187,19 @@ func (s *Spinner) View() string {
 	return indicator
 }
 
+// ViewWithoutMessage renders just the spinner indicator without the message.
+// Useful for inline spinners where the message is rendered separately.
+func (s *Spinner) ViewWithoutMessage() string {
+	if s == nil {
+		return ""
+	}
+
+	if s.reduceMotion {
+		return "[...]"
+	}
+	return s.spinner.View()
+}
+
 // SetMessage updates the spinner message.
 func (s *Spinner) SetMessage(msg string) {
 	if s == nil {

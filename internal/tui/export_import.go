@@ -85,8 +85,9 @@ func (m Model) handleExportConfirmKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.confirmDialog.Confirmed() {
 			m.confirmDialog = nil
 			m.state = stateList
-			m.statusMsg = "Exporting vault..."
-			return m, m.executeExport()
+			m.statusMsg = ""
+			spinnerCmd := m.setActivitySpinner("Exporting vault...")
+			return m, tea.Batch(spinnerCmd, m.executeExport())
 		}
 		// User selected "No" - cancel export
 		m.confirmDialog = nil
@@ -231,9 +232,10 @@ func (m Model) validateAndPreviewImport(bundlePath string) (tea.Model, tea.Cmd) 
 		return m, nil
 	}
 
-	m.statusMsg = "Loading bundle preview..."
+	m.statusMsg = ""
 	m.pendingProfile = bundlePath // Reuse pendingProfile to store bundle path
-	return m, m.loadImportPreview(bundlePath)
+	spinnerCmd := m.setActivitySpinner("Loading bundle preview...")
+	return m, tea.Batch(spinnerCmd, m.loadImportPreview(bundlePath))
 }
 
 // loadImportPreview loads a preview of what would be imported.
@@ -287,8 +289,9 @@ func (m Model) handleImportConfirmKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.confirmDialog = nil
 			m.pendingProfile = ""
 			m.state = stateList
-			m.statusMsg = "Importing bundle..."
-			return m, m.executeImport(bundlePath)
+			m.statusMsg = ""
+			spinnerCmd := m.setActivitySpinner("Importing bundle...")
+			return m, tea.Batch(spinnerCmd, m.executeImport(bundlePath))
 		}
 		// User selected "No" - cancel import
 		m.confirmDialog = nil
@@ -342,18 +345,22 @@ func (m Model) executeImport(bundlePath string) tea.Cmd {
 
 // handleExportComplete processes the export completion message.
 func (m Model) handleExportComplete(msg exportCompleteMsg) (tea.Model, tea.Cmd) {
+	m.clearActivitySpinner()
 	m.statusMsg = fmt.Sprintf("Exported to: %s (%s)", msg.path, bundle.FormatSize(msg.size))
 	return m, nil
 }
 
 // handleExportError processes the export error message.
 func (m Model) handleExportError(msg exportErrorMsg) (tea.Model, tea.Cmd) {
+	m.clearActivitySpinner()
 	m.statusMsg = fmt.Sprintf("Export failed: %v", msg.err)
 	return m, nil
 }
 
 // handleImportPreview processes the import preview message and shows confirmation.
 func (m Model) handleImportPreview(msg importPreviewMsg) (tea.Model, tea.Cmd) {
+	m.clearActivitySpinner()
+
 	// Build preview message
 	previewText := fmt.Sprintf(
 		"Import Preview:\n  Add: %d new profiles\n  Update: %d profiles\n  Skip: %d profiles\n\nProceed with import?",
@@ -374,6 +381,7 @@ func (m Model) handleImportPreview(msg importPreviewMsg) (tea.Model, tea.Cmd) {
 
 // handleImportComplete processes the import completion message.
 func (m Model) handleImportComplete(msg importCompleteMsg) (tea.Model, tea.Cmd) {
+	m.clearActivitySpinner()
 	r := msg.result
 	m.statusMsg = fmt.Sprintf("Import complete: %d added, %d updated, %d skipped",
 		r.NewProfiles, r.UpdatedProfiles, r.SkippedProfiles)
@@ -384,6 +392,7 @@ func (m Model) handleImportComplete(msg importCompleteMsg) (tea.Model, tea.Cmd) 
 
 // handleImportError processes the import error message.
 func (m Model) handleImportError(msg importErrorMsg) (tea.Model, tea.Cmd) {
+	m.clearActivitySpinner()
 	m.statusMsg = fmt.Sprintf("Import failed: %v", msg.err)
 	return m, nil
 }

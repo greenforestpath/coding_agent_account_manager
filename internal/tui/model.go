@@ -194,6 +194,10 @@ type Model struct {
 
 	// Toast notifications
 	toasts []Toast
+
+	// Activity spinner for background operations (export/import)
+	activitySpinner *Spinner
+	activityMessage string // message to show with spinner
 }
 
 // DefaultProviders returns the default list of provider names.
@@ -269,8 +273,9 @@ func NewWithProvidersAndConfig(providers []string, cfg *config.SPMConfig) Model 
 		vaultMeta:      make(map[string]map[string]vaultProfileMeta),
 		projectStore:   project.NewStore(""),
 		healthStorage:  health.NewStorage(""),
-		helpRenderer:   NewHelpRenderer(theme),
-		theme:          theme,
+		helpRenderer:    NewHelpRenderer(theme),
+		theme:           theme,
+		activitySpinner: NewSpinnerWithTheme(theme, ""),
 	}
 }
 
@@ -422,6 +427,21 @@ func formatSQLiteSince(t time.Time) string {
 		return "1970-01-01 00:00:00"
 	}
 	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+// setActivitySpinner activates the activity spinner with the given message.
+// Returns a command to start the spinner animation.
+func (m *Model) setActivitySpinner(message string) tea.Cmd {
+	m.activityMessage = message
+	if m.activitySpinner != nil {
+		return m.activitySpinner.Tick()
+	}
+	return nil
+}
+
+// clearActivitySpinner deactivates the activity spinner.
+func (m *Model) clearActivitySpinner() {
+	m.activityMessage = ""
 }
 
 // loadProfiles loads profiles for all providers.
@@ -746,6 +766,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.syncPanel != nil && (m.syncPanel.loading || m.syncPanel.syncing) && m.syncPanel.Visible() {
 			_, cmd := m.syncPanel.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		// Forward to activity spinner when active (for export/import operations)
+		if m.activitySpinner != nil && m.activityMessage != "" {
+			var cmd tea.Cmd
+			m.activitySpinner, cmd = m.activitySpinner.Update(msg)
 			if cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -3009,6 +3037,10 @@ func (m Model) statusCenterText() string {
 	if len(m.toasts) > 0 {
 		return m.toasts[len(m.toasts)-1].Message
 	}
+	// Activity spinner message takes priority over regular status
+	if m.activityMessage != "" {
+		return m.activityMessage
+	}
 	return m.statusMsg
 }
 
@@ -3026,6 +3058,13 @@ func (m Model) statusCenterMessage() string {
 	if text == "" {
 		return ""
 	}
+
+	// When activity spinner is active, show spinner with message
+	if m.activityMessage != "" && m.activitySpinner != nil {
+		spinnerView := m.activitySpinner.ViewWithoutMessage()
+		return spinnerView + " " + m.styles.StatusSeverityStyle(StatusInfo).Render(text)
+	}
+
 	severity := m.statusMessageSeverity()
 	return m.styles.StatusSeverityStyle(severity).Render(text)
 }

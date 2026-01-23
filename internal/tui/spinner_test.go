@@ -282,6 +282,42 @@ func TestSpinnerView(t *testing.T) {
 	}
 }
 
+func TestSpinnerViewWithoutMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       SpinnerOptions
+		notContain []string
+	}{
+		{
+			name: "animated spinner excludes message",
+			opts: SpinnerOptions{
+				Message: "Loading data...",
+			},
+			notContain: []string{"Loading data..."},
+		},
+		{
+			name: "ReduceMotion shows static indicator",
+			opts: SpinnerOptions{
+				Message:      "Loading...",
+				ReduceMotion: true,
+			},
+			notContain: []string{"Loading..."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewSpinner(tt.opts)
+			view := s.ViewWithoutMessage()
+
+			assert.NotEmpty(t, view, "view should not be empty")
+			for _, substr := range tt.notContain {
+				assert.NotContains(t, view, substr, "unexpected %q in view", substr)
+			}
+		})
+	}
+}
+
 func TestSpinnerSetMessage(t *testing.T) {
 	s := NewSpinner(SpinnerOptions{Message: "Initial"})
 	assert.Contains(t, s.View(), "Initial")
@@ -411,11 +447,13 @@ func TestSpinnerNilSafety(t *testing.T) {
 	assert.NotPanics(t, func() { s.Init() })
 	assert.NotPanics(t, func() { s.Update(nil) })
 	assert.NotPanics(t, func() { s.View() })
+	assert.NotPanics(t, func() { s.ViewWithoutMessage() })
 	assert.NotPanics(t, func() { s.SetMessage("test") })
 	assert.NotPanics(t, func() { s.Tick() })
 	assert.NotPanics(t, func() { s.IsAnimated() })
 
 	assert.Equal(t, "", s.View())
+	assert.Equal(t, "", s.ViewWithoutMessage())
 	assert.False(t, s.IsAnimated())
 	assert.Nil(t, s.Init())
 	assert.Nil(t, s.Tick())
