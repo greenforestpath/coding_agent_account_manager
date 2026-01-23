@@ -524,9 +524,8 @@ func (r *SmartRunner) monitorOutput(ctx context.Context, ctrl pty.Controller, do
 				// Context cancelled, but continue draining PTY buffer until EOF
 				// Set a deadline to prevent infinite draining if process doesn't exit
 				draining = true
-				drainDeadline := time.Now().Add(5 * time.Second)
 				go func() {
-					<-time.After(time.Until(drainDeadline))
+					time.Sleep(5 * time.Second)
 					// Force close PTY if still draining after timeout
 					ctrl.Close()
 				}()
