@@ -16,6 +16,11 @@ import (
 )
 
 func TestDaemonRefresh(t *testing.T) {
+	// Skip: Claude Code handles token refresh internally, so the daemon
+	// cannot refresh Claude tokens. This test was designed for an older
+	// architecture where the daemon could refresh tokens.
+	t.Skip("Claude token refresh is handled internally by Claude Code, not the daemon")
+
 	h := testutil.NewExtendedHarness(t)
 	defer h.Close()
 

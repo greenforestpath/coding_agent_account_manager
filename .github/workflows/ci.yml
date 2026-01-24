@@ -146,7 +146,8 @@ jobs:
     - name: golangci-lint
       uses: golangci/golangci-lint-action@v6
       with:
-        version: latest
+        # v1.65+ supports Go 1.25
+        version: v1.65.0
         args: --timeout=5m
 
   build-matrix:
