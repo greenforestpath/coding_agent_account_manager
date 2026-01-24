@@ -157,8 +157,11 @@ On file change:
 #### Command
 
 ```bash
-caam auth-coordinator [--port 7890] [--poll-interval 500ms] [--resume-prompt "..."]
+caam auth-coordinator [--port 7890] [--poll-interval 500ms] [--resume-prompt "..."] [--auth-token "shared-secret"]
 ```
+
+If `--auth-token` (or `CAAM_COORDINATOR_TOKEN`) is set, the coordinator API requires
+`Authorization: Bearer <token>` from the local agent.
 
 #### Responsibilities
 
@@ -525,6 +528,9 @@ coordinator:
   # Timeouts
   auth_timeout: 60s
   state_timeout: 30s
+
+  # Optional shared secret (enforces Bearer auth on coordinator API)
+  auth_token: "shared-secret"
 ```
 
 ### Local Configuration (~/.config/caam/agent.yaml)
@@ -532,6 +538,8 @@ coordinator:
 ```yaml
 agent:
   port: 7891
+  # Optional shared secret for coordinator API calls
+  coordinator_token: "shared-secret"
 
   browser:
     # Chrome executable path (auto-detected on Mac)
@@ -556,6 +564,9 @@ agent:
     # Minimum time before reusing an account
     min_reuse_interval: 30m
 ```
+
+For multi-coordinator configs, each coordinator entry can include a `token` field
+to use a different shared secret per endpoint.
 
 ## Implementation Plan
 
