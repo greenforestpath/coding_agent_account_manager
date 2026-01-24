@@ -2692,7 +2692,7 @@ func (m Model) fullLayoutSpec(contentHeight int) layoutSpec {
 
 	spec.ProviderWidth = provider
 	spec.DetailWidth = detail
-	spec.ProfilesWidth = max(0, available-provider-detail)
+	spec.ProfilesWidth = max(0, profiles)
 	return spec
 }
 

@@ -80,11 +80,6 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("destination profile %s/%s already exists; choose a different name or delete it with 'caam delete %s %s'", tool, newName, tool, newName)
 	}
 
-	// Prevent renaming system profiles to non-system names (preserves safety)
-	if authfile.IsSystemProfile(oldName) && !authfile.IsSystemProfile(newName) {
-		// This is fine - user wants to "promote" a backup to a real profile
-	}
-
 	// Copy the profile
 	if err := vault.CopyProfile(tool, oldName, newName); err != nil {
 		return fmt.Errorf("copy profile: %w", err)

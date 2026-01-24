@@ -364,7 +364,7 @@ func (c *SSHClient) WriteFile(remotePath string, data []byte, mode os.FileMode) 
 
 	// Ensure directory exists
 	if err := c.MkdirAll(dir); err != nil {
-		// Directory might already exist, continue
+		return err
 	}
 
 	f, err := c.sftp.Create(tmpPath)

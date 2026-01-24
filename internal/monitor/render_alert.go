@@ -37,15 +37,13 @@ func (r *AlertRenderer) Render(state *MonitorState) string {
 			continue
 		}
 
-		alertLevel := AlertNone
+		alertLevel := AlertWarning
 		switch {
 		case percent >= exhaustedThreshold:
 			alertLevel = AlertExhausted
 		case percent >= criticalThreshold:
 			alertLevel = AlertCritical
 		case percent >= warningThreshold:
-			alertLevel = AlertWarning
-		default:
 			alertLevel = AlertWarning
 		}
 

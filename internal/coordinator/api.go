@@ -88,12 +88,12 @@ func (a *APIServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // StatusResponse is the response from /status endpoint.
 type StatusResponse struct {
-	Running        bool                    `json:"running"`
-	Backend        string                  `json:"backend"`
-	PaneCount      int                     `json:"pane_count"`
-	PendingAuths   int                     `json:"pending_auths"`
-	Panes          []PaneStatusResponse    `json:"panes"`
-	PendingDetails []*AuthRequest          `json:"pending_details,omitempty"`
+	Running        bool                 `json:"running"`
+	Backend        string               `json:"backend"`
+	PaneCount      int                  `json:"pane_count"`
+	PendingAuths   int                  `json:"pending_auths"`
+	Panes          []PaneStatusResponse `json:"panes"`
+	PendingDetails []*AuthRequest       `json:"pending_details,omitempty"`
 }
 
 // PaneStatusResponse is the status of a single pane.
@@ -164,12 +164,7 @@ func (a *APIServer) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := AuthResponse{
-		RequestID: req.RequestID,
-		Code:      req.Code,
-		Account:   req.Account,
-		Error:     req.Error,
-	}
+	resp := AuthResponse(req)
 
 	if err := a.coordinator.ReceiveAuthResponse(resp); err != nil {
 		a.logger.Error("failed to process auth response",

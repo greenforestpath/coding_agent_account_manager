@@ -55,21 +55,10 @@ func ParseClaudeExpiry(authDir string) (*ExpiryInfo, error) {
 	homeDir, _ := os.UserHomeDir()
 
 	if authDir == "" {
-		// System state probing - check the actual credentials file location
-		credentialsPath := filepath.Join(homeDir, ".claude", ".credentials.json")
-		info, err := parseClaudeCredentialsFile(credentialsPath)
-		if err == nil {
-			info.Source = credentialsPath
-			return info, nil
-		}
-
-		// Fallback to legacy locations for backwards compatibility
-		claudeJsonPath := filepath.Join(homeDir, ".claude.json")
-		info, err = parseOAuthFile(claudeJsonPath)
-		if err == nil {
-			info.Source = claudeJsonPath
-			return info, nil
-		}
+		var (
+			info *ExpiryInfo
+			err  error
+		)
 
 		var authCandidates []string
 		if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
@@ -88,6 +77,22 @@ func ParseClaudeExpiry(authDir string) (*ExpiryInfo, error) {
 				info.Source = candidate
 				return info, nil
 			}
+		}
+
+		// System state probing - check the actual credentials file location
+		credentialsPath := filepath.Join(homeDir, ".claude", ".credentials.json")
+		info, err = parseClaudeCredentialsFile(credentialsPath)
+		if err == nil {
+			info.Source = credentialsPath
+			return info, nil
+		}
+
+		// Fallback to legacy locations for backwards compatibility
+		claudeJsonPath := filepath.Join(homeDir, ".claude.json")
+		info, err = parseOAuthFile(claudeJsonPath)
+		if err == nil {
+			info.Source = claudeJsonPath
+			return info, nil
 		}
 
 		if _, statErr := os.Stat(credentialsPath); os.IsNotExist(statErr) {

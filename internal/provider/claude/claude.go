@@ -831,13 +831,7 @@ func (p *Provider) validateTokenPassive(ctx context.Context, prof *profile.Profi
 			}
 		}
 
-		// Check for required OAuth fields
-		if _, hasToken := claudeData["oauthToken"]; !hasToken {
-			if _, hasSession := claudeData["sessionKey"]; !hasSession {
-				// No token field found, but file might still be valid
-				// Some versions use different field names
-			}
-		}
+		// No further validation needed; different versions may use different field names.
 	}
 
 	// Check auth.json if it exists

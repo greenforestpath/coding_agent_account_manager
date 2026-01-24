@@ -438,7 +438,7 @@ func checkSingleDependency(spec DependencySpec, autoInstall bool, skipConfirm bo
 				return CheckResult{
 					Name:    spec.Name,
 					Status:  "fixed",
-					Message: fmt.Sprintf("installed successfully"),
+					Message: "installed successfully",
 					Details: installResult.output,
 				}
 			}
